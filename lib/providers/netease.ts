@@ -1,6 +1,7 @@
 /**
- * 网易云音乐 Provider — 移植自 music-lib/netease（weapi 加密）
- * 覆盖 Go 版全部能力：song parse / album / playlist / 推荐 / 分类 / 用户歌单 / QR 登录
+ * 网易云音乐 Provider — 底层全部走 lib/netease（api-enhanced 全量接口系统）
+ * 覆盖：song parse / album / playlist / 推荐 / 分类 / 用户歌单 / QR 登录 / VIP 高音质下载
+ * 业务映射与缓存沿用本项目管理（VIP 判定 10min、下载直链 10min、链接解析、yrc 逐字歌词）
  */
 import type {
   MusicProvider,
@@ -12,35 +13,16 @@ import type {
   QRLoginStatus,
   Song,
 } from "../types";
-import { httpPostFormJSON, httpPostFormResp } from "../http";
-import { encryptLinuxParams, encryptWeApi, encryptEApi, md5hex } from "../crypto";
+import { invokeNcm } from "../netease";
+import { createRequest } from "../netease/request";
+import { cookieToJson } from "../netease/utils";
+import { md5hex } from "../crypto";
 import { parseLrcVerbatim, parseYrcData, convertVerbatimLRC, type VMultiData } from "../lyrics";
 import { getCookie } from "../cookies";
 
-const REFERER = "http://music.163.com/";
-const neteaseHeaders = () => ({ Referer: REFERER });
-
-/** cookie 注入（对齐 Go Netease.cookie，运行时读取保证登录后生效） */
-function cookieHeader(): Record<string, string> {
-  const cookie = getCookie("netease");
-  return cookie ? { Cookie: cookie } : {};
-}
-
-/** weapi POST（对齐 Go：params/encSecKey 表单 + Referer + Cookie + 随机 IP） */
-async function weapiPost<T>(url: string, data: unknown): Promise<T> {
-  const { params, encSecKey } = encryptWeApi(JSON.stringify(data));
-  return httpPostFormJSON<T>(url, { params, encSecKey }, {
-    headers: { ...neteaseHeaders(), ...cookieHeader() },
-  });
-}
-
 // ---------------------------------------------------------------------------
-// VIP eapi 高音质下载链（对齐 Go netease/download.go + account.go）
+// VIP eapi 高音质下载链（保留缓存策略；加密与请求改走 lib/netease/request）
 // ---------------------------------------------------------------------------
-
-const DOWNLOAD_EAPI = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1";
-const USER_ACCOUNT_API = "https://music.163.com/weapi/nuser/account/get";
-const EAPI_HEADER_JSON = `{"os":"pc","appver":"","osver":"","deviceId":"pyncm!","requestId":"12345678"}`;
 
 interface CachedDownloadURL {
   url: string;
@@ -48,12 +30,12 @@ interface CachedDownloadURL {
   expiresAt: number;
 }
 
-/** 对齐 Go downloadURLCache：key = songID:levels:md5(cookie)，TTL 10 分钟 */
+/** key = songID:levels:md5(cookie)，TTL 10 分钟 */
 const downloadURLCache = new Map<string, CachedDownloadURL>();
 
 const neteaseVipCache = new Map<string, { isVip: boolean; expiresAt: number }>();
 
-/** 对齐 Go IsVipAccount：weapi/nuser/account/get → profile.vipType，10 分钟缓存 */
+/** weapi/nuser/account/get → profile.vipType，10 分钟缓存（底层走 user_account 模块） */
 async function isNeteaseVipAccount(): Promise<boolean> {
   const cookie = getCookie("netease");
   if (!cookie.trim()) return false;
@@ -63,10 +45,8 @@ async function isNeteaseVipAccount(): Promise<boolean> {
   if (cached && cached.expiresAt > Date.now()) return cached.isVip;
 
   try {
-    const resp = await weapiPost<{ code?: number; profile?: { vipType?: number } }>(USER_ACCOUNT_API, {
-      csrf_token: "",
-    });
-    const isVip = resp.code === 200 && (resp.profile?.vipType ?? 0) !== 0;
+    const resp = await invokeNcm<{ code?: number; profile?: { vipType?: number } }>("user_account");
+    const isVip = resp.body.code === 200 && (resp.body.profile?.vipType ?? 0) !== 0;
     neteaseVipCache.set(key, { isVip, expiresAt: Date.now() + 10 * 60_000 });
     return isVip;
   } catch {
@@ -74,7 +54,7 @@ async function isNeteaseVipAccount(): Promise<boolean> {
   }
 }
 
-/** 对齐 Go preferredDownloadLevels：extra 指定单曲级别，默认 lossless → hires → exhigh */
+/** extra 指定单曲级别，默认 lossless → hires → exhigh */
 function preferredDownloadLevels(song: Song): string[] {
   const extra = song.extra ?? {};
   const level = (extra["netease_level"] ?? extra["level"] ?? "").trim().toLowerCase();
@@ -89,7 +69,7 @@ function normalizeNeteaseAudioType(audioType: string, quality: string): string {
   return "";
 }
 
-/** 对齐 Go getEAPIDownloadURL：eapi 逐级请求高音质直链 */
+/** eapi 逐级请求高音质直链（对齐 song/enhance/player/url/v1） */
 async function getEAPIDownloadURL(
   songId: string,
   quality: string,
@@ -98,38 +78,28 @@ async function getEAPIDownloadURL(
   const idNum = parseInt(songId, 10);
   if (!Number.isFinite(idNum)) throw new Error(`invalid song id: ${songId}`);
 
-  const payload = JSON.stringify({
-    ids: [idNum],
-    level: quality,
-    encodeType: "flac",
-    header: EAPI_HEADER_JSON,
-  });
-  const params = encryptEApi(DOWNLOAD_EAPI, payload);
-
-  const resp = await httpPostFormJSON<{ data?: { url?: string; code?: number; type?: string }[] }>(
-    DOWNLOAD_EAPI,
-    { params },
-    { headers: { Referer: REFERER, Cookie: cookie } },
+  const resp = await createRequest<{ data?: { url?: string; code?: number; type?: string }[] }>(
+    "/api/song/enhance/player/url/v1",
+    {
+      ids: [idNum],
+      level: quality,
+      encodeType: "flac",
+    },
+    {
+      crypto: "eapi",
+      cookie: cookieToJson(cookie),
+      ua: "",
+      randomCNIP: false,
+      e_r: undefined,
+      domain: "",
+      checkToken: false,
+      headers: {},
+      timeout: 0,
+    },
   );
-  const item = resp.data?.[0];
+  const item = resp.body.data?.[0];
   if (!item?.url) throw new Error("eapi download url not found");
   return { url: item.url, ext: normalizeNeteaseAudioType(item.type ?? "", quality) };
-}
-
-/** Linux forward 云搜索（对齐 Go cloudSearch） */
-async function cloudSearch<T = unknown>(keyword: string, searchType: number, limit: number): Promise<T> {
-  const eparams = encryptLinuxParams(
-    JSON.stringify({
-      method: "POST",
-      url: "http://music.163.com/api/cloudsearch/pc",
-      params: { s: keyword, type: searchType, offset: 0, limit },
-    }),
-  );
-  return httpPostFormJSON<T>(
-    "http://music.163.com/api/linux/forward",
-    { eparams },
-    { headers: { ...neteaseHeaders(), ...cookieHeader() } },
-  );
 }
 
 interface NeteaseSearchSong {
@@ -160,7 +130,7 @@ interface NeteasePlaylistItem {
   subscribed?: boolean;
 }
 
-/** 链接解析 — 对齐 Go parseNeteaseLink（song/album/playlist 三类） */
+/** 链接解析 — song/album/playlist 三类 */
 type NeteaseLinkKind = "song" | "album" | "playlist";
 
 function isDigits(value: string): boolean {
@@ -213,7 +183,7 @@ function parseNeteaseLink(link: string): { kind: NeteaseLinkKind; id: string } |
     const fragment = parsed.hash.replace(/^#/, "").trim().replace(/^!/, "").trim();
     if (fragment) candidates.push(fragment);
   } catch {
-    /* Go url.Parse 容错，保持一致：原始链接作为唯一候选 */
+    /* 容错：原始链接作为唯一候选 */
   }
   for (const candidate of candidates) {
     const result = parseNeteaseLinkCandidate(candidate);
@@ -251,17 +221,14 @@ function joinArtists(ar: { name?: string }[] | undefined, sep = "、"): string {
   return (ar ?? []).map((a) => a.name ?? "").filter(Boolean).join(sep);
 }
 
-/** 批量取歌曲详情 — 对齐 Go fetchSongsBatch（weapi/v3/song/detail） */
+/** 批量取歌曲详情 — weapi/v3/song/detail（song_detail 模块） */
 async function fetchSongsBatch(songIDs: string[]): Promise<Song[]> {
   if (!songIDs.length) return [];
-  const cList = songIDs.map((id) => ({ id }));
-  const reqData = { c: JSON.stringify(cList), ids: JSON.stringify(songIDs) };
-  const resp = await weapiPost<{ songs?: NeteaseAlbumApiSong[] }>(
-    "https://music.163.com/weapi/v3/song/detail",
-    reqData,
-  );
+  const resp = await invokeNcm<{ songs?: NeteaseAlbumApiSong[] }>("song_detail", {
+    ids: songIDs.join(","),
+  });
 
-  return (resp.songs ?? []).map((item) => ({
+  return (resp.body.songs ?? []).map((item) => ({
     source: "netease",
     id: String(item.id),
     name: (item.name ?? "").trim(),
@@ -321,20 +288,20 @@ function albumToPlaylist(info: NeteaseAlbumInfo): Playlist {
   };
 }
 
-/** 专辑详情 — 对齐 Go fetchAlbumDetail（weapi/v1/album/{id}） */
+/** 专辑详情 — weapi/v1/album/{id}（album 模块） */
 async function fetchAlbumDetail(albumID: string): Promise<PlaylistDetail> {
-  const resp = await weapiPost<{
+  const resp = await invokeNcm<{
     code?: number;
     album?: NeteaseAlbumInfo;
     songs?: NeteaseAlbumApiSong[];
-  }>(`https://music.163.com/weapi/v1/album/${albumID}`, { csrf_token: "" });
+  }>("album", { id: albumID });
 
-  if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
-  if (!resp.album) throw new Error("netease album not found");
+  if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
+  if (!resp.body.album) throw new Error("netease album not found");
 
-  const album = albumToPlaylist(resp.album);
+  const album = albumToPlaylist(resp.body.album);
 
-  const songs: Song[] = (resp.songs ?? []).map((item) => {
+  const songs: Song[] = (resp.body.songs ?? []).map((item) => {
     const size = pickSongSize(item);
     const duration = Math.floor((item.dt ?? 0) / 1000);
     return {
@@ -357,9 +324,9 @@ async function fetchAlbumDetail(albumID: string): Promise<PlaylistDetail> {
   return { playlist: album, songs };
 }
 
-/** 歌单详情 — 对齐 Go fetchPlaylistDetail（weapi/v3/playlist/detail + 批量歌曲） */
+/** 歌单详情 — v6/playlist/detail（playlist_detail 模块）+ song_detail 批量歌曲 */
 async function fetchPlaylistDetail(playlistID: string): Promise<PlaylistDetail> {
-  const resp = await weapiPost<{
+  const resp = await invokeNcm<{
     code?: number;
     playlist?: {
       id: number | string;
@@ -371,12 +338,12 @@ async function fetchPlaylistDetail(playlistID: string): Promise<PlaylistDetail> 
       creator?: { nickname?: string };
       trackIds?: { id: number | string }[];
     };
-  }>("https://music.163.com/weapi/v3/playlist/detail", { id: playlistID, n: 0, csrf_token: "" });
+  }>("playlist_detail", { id: playlistID, s: 0 });
 
-  if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
-  if (!resp.playlist) throw new Error("netease playlist not found");
+  if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
+  if (!resp.body.playlist) throw new Error("netease playlist not found");
 
-  const pl = resp.playlist;
+  const pl = resp.body.playlist;
   const playlist: Playlist = {
     source: "netease",
     id: String(pl.id),
@@ -397,16 +364,11 @@ async function fetchPlaylistDetail(playlistID: string): Promise<PlaylistDetail> 
     try {
       allSongs.push(...(await fetchSongsBatch(batch)));
     } catch {
-      /* 对齐 Go：批量失败跳过 */
+      /* 批量失败跳过 */
     }
   }
   return { playlist, songs: allSongs };
 }
-
-const QR_KEY_API = "https://interface.music.163.com/api/login/qrcode/unikey";
-const QR_CHECK_API = "https://interface.music.163.com/api/login/qrcode/client/login";
-const QR_UA =
-  "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.0.18.203152";
 
 function mapNeteaseQRStatus(code: number): QRLoginStatus {
   switch (code) {
@@ -423,50 +385,19 @@ function mapNeteaseQRStatus(code: number): QRLoginStatus {
   }
 }
 
-function joinCookieMap(cookies: Record<string, string>): string {
-  return Object.keys(cookies)
-    .filter((k) => k.trim())
-    .sort()
-    .map((k) => `${k}=${cookies[k]}`)
-    .join("; ");
-}
-
-function responseCookieMap(resp: Response): Record<string, string> {
-  const cookies: Record<string, string> = {};
-  const headers = resp.headers as Headers & { getSetCookie?: () => string[] };
-  const list: string[] =
-    typeof headers.getSetCookie === "function"
-      ? headers.getSetCookie()
-      : (resp.headers.get("set-cookie") ?? "").split(", ").filter(Boolean);
-  for (const raw of list) {
-    const [pair] = raw.split(";");
-    const eq = pair.indexOf("=");
-    if (eq <= 0) continue;
-    const name = pair.slice(0, eq).trim();
-    if (!name) continue;
-    cookies[name] = pair.slice(eq + 1).trim();
-  }
-  return cookies;
-}
-
-async function postQRLogin(apiURL: string, form: Record<string, string>): Promise<{ body: string; cookies: Record<string, string> }> {
-  const resp = await httpPostFormResp(apiURL, form, {
-    headers: { "User-Agent": QR_UA, Referer: REFERER },
-  });
-  if (resp.status !== 200) throw new Error(`netease qr login http status ${resp.status}`);
-  return { body: await resp.text(), cookies: responseCookieMap(resp) };
-}
-
 export const netease: MusicProvider = {
   name: "netease",
   label: "网易云音乐",
   supportsFlac: true,
 
   async search(keyword: string): Promise<Song[]> {
-    // Linux forward API（AES-ECB eparams）；limit=10 对齐 Go cloudSearch(keyword, 1, 10)
-    const resp = await cloudSearch<{ result?: { songs?: NeteaseSearchSong[] } }>(keyword, 1, 10);
+    const resp = await invokeNcm<{ result?: { songs?: NeteaseSearchSong[] } }>("cloudsearch", {
+      keywords: keyword,
+      type: 1,
+      limit: 10,
+    });
 
-    // VIP 账号不过滤无权限曲目（对齐 Go：IsVipAccount 时跳过 fl==0 过滤）
+    // VIP 账号不过滤无权限曲目
     let isVip = false;
     try {
       isVip = await isNeteaseVipAccount();
@@ -475,7 +406,7 @@ export const netease: MusicProvider = {
     }
 
     const songs: Song[] = [];
-    for (const item of resp.result?.songs ?? []) {
+    for (const item of resp.body.result?.songs ?? []) {
       const fl = item.privilege?.fl ?? 0;
       if (!isVip && fl === 0) continue; // 非会员无播放权限
 
@@ -484,7 +415,6 @@ export const netease: MusicProvider = {
       else if (fl >= 192000 && item.m?.size) size = item.m.size;
 
       const duration = Math.floor((item.dt ?? 0) / 1000);
-      // bitrate 兜底 128（对齐 Go）
       const bitrate = duration > 0 && size > 0 ? Math.round((size * 8) / 1000 / duration) : 128;
 
       songs.push({
@@ -516,7 +446,7 @@ export const netease: MusicProvider = {
     try {
       song.url = await netease.getStreamUrl(song);
     } catch {
-      /* 对齐 Go：URL 获取失败不影响单曲解析 */
+      /* URL 获取失败不影响单曲解析 */
     }
     return song;
   },
@@ -526,7 +456,7 @@ export const netease: MusicProvider = {
     const cookie = getCookie("netease");
     const levels = preferredDownloadLevels(song);
 
-    // VIP eapi 高音质链（对齐 Go Netease.GetDownloadURL：VIP + levels 逐级 + 10 分钟缓存）
+    // VIP eapi 高音质链（levels 逐级 + 10 分钟缓存）
     if (cookie.trim() && (await isNeteaseVipAccount())) {
       const cacheKey = `${songId}:${levels.join(",")}:${md5hex(cookie)}`;
       const cached = downloadURLCache.get(cacheKey);
@@ -549,16 +479,23 @@ export const netease: MusicProvider = {
       }
     }
 
-    // Fall back to the original weapi route.
-    const { params, encSecKey } = encryptWeApi(
-      JSON.stringify({ ids: [songId], br: 320000 }),
+    // Fall back to the original weapi route（song/enhance/player/url）
+    const resp = await createRequest<{ data?: { url?: string; code?: number }[] }>(
+      "/api/song/enhance/player/url",
+      { ids: [songId], br: 320000 },
+      {
+        crypto: "weapi",
+        cookie: cookieToJson(cookie),
+        ua: "",
+        randomCNIP: false,
+        e_r: undefined,
+        domain: "",
+        checkToken: false,
+        headers: {},
+        timeout: 0,
+      },
     );
-    const resp = await httpPostFormJSON<{ data?: { url?: string; code?: number }[] }>(
-      "http://music.163.com/weapi/song/enhance/player/url",
-      { params, encSecKey },
-      { headers: { ...neteaseHeaders(), ...cookieHeader() } },
-    );
-    const url = resp.data?.[0]?.url;
+    const url = resp.body.data?.[0]?.url;
     if (!url) throw new Error("netease: 未获取到播放链接（可能是 VIP / 版权受限）");
     downloadURLCache.set(`${songId}:${levels.join(",")}:${md5hex(cookie)}`, {
       url,
@@ -570,28 +507,25 @@ export const netease: MusicProvider = {
 
   async getLyric(song: Song): Promise<string> {
     const songId = song.extra?.song_id || song.id;
-    const { params, encSecKey } = encryptWeApi(
-      JSON.stringify({ csrf_token: "", id: songId, lv: -1, tv: -1, rv: -1, yv: -1 }),
-    );
-    const resp = await httpPostFormJSON<{
+    const resp = await invokeNcm<{
       code?: number;
       lrc?: { lyric?: string };
       yrc?: { lyric?: string };
       tlyric?: { lyric?: string };
       romalrc?: { lyric?: string };
-    }>("https://music.163.com/weapi/song/lyric", { params, encSecKey }, { headers: { ...neteaseHeaders(), ...cookieHeader() } });
+    }>("lyric_new", { id: songId });
 
-    if (resp.code !== 200) throw new Error("netease: 歌词接口错误");
+    if (resp.body.code !== 200) throw new Error("netease: 歌词接口错误");
 
-    // 对齐 Go netease/lyric.go：yrc 逐字歌词优先；tags ti/ar/al；ConvertVerbatimLRC（orig→roma→ts）
+    // yrc 逐字歌词优先；tags ti/ar/al；ConvertVerbatimLRC（orig→roma→ts）
     const tags: Record<string, string> = {
       ti: song.name ?? "",
       ar: song.artist ?? "",
       al: song.album ?? "",
     };
     const data: VMultiData = {};
-    const yrcText = (resp.yrc?.lyric ?? "").trim();
-    const lrcText = (resp.lrc?.lyric ?? "").trim();
+    const yrcText = (resp.body.yrc?.lyric ?? "").trim();
+    const lrcText = (resp.body.lrc?.lyric ?? "").trim();
     if (yrcText) {
       data.orig = parseYrcData(yrcText);
     } else if (lrcText) {
@@ -601,9 +535,9 @@ export const netease: MusicProvider = {
       }
       data.orig = parsed.data;
     }
-    const tsText = (resp.tlyric?.lyric ?? "").trim();
+    const tsText = (resp.body.tlyric?.lyric ?? "").trim();
     if (tsText) data.ts = parseLrcVerbatim(tsText).data;
-    const romaText = (resp.romalrc?.lyric ?? "").trim();
+    const romaText = (resp.body.romalrc?.lyric ?? "").trim();
     if (romaText) data.roma = parseLrcVerbatim(romaText).data;
 
     if (!data.orig?.length) throw new Error("netease: 歌词未找到");
@@ -613,9 +547,12 @@ export const netease: MusicProvider = {
   // ---- AlbumProvider ----
 
   async searchAlbum(keyword: string): Promise<Playlist[]> {
-    const resp = await cloudSearch<{ code?: number; result?: { albums?: NeteaseAlbumInfo[] } }>(keyword, 10, 10);
-    if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
-    return (resp.result?.albums ?? []).map(albumToPlaylist);
+    const resp = await invokeNcm<{ code?: number; result?: { albums?: NeteaseAlbumInfo[] } }>(
+      "cloudsearch",
+      { keywords: keyword, type: 10, limit: 10 },
+    );
+    if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
+    return (resp.body.result?.albums ?? []).map(albumToPlaylist);
   },
 
   async getAlbumSongs(albumID: string): Promise<Song[]> {
@@ -631,8 +568,12 @@ export const netease: MusicProvider = {
   // ---- PlaylistProvider ----
 
   async searchPlaylist(keyword: string): Promise<Playlist[]> {
-    const resp = await cloudSearch<{ result?: { playlists?: NeteasePlaylistItem[] } }>(keyword, 1000, 10);
-    return (resp.result?.playlists ?? []).map((item) => ({
+    const resp = await invokeNcm<{ result?: { playlists?: NeteasePlaylistItem[] } }>("cloudsearch", {
+      keywords: keyword,
+      type: 1000,
+      limit: 10,
+    });
+    return (resp.body.result?.playlists ?? []).map((item) => ({
       source: "netease",
       id: String(item.id),
       name: (item.name ?? "").trim(),
@@ -658,14 +599,14 @@ export const netease: MusicProvider = {
   // ---- RecommendedPlaylistProvider ----
 
   async getRecommendedPlaylists(): Promise<Playlist[]> {
-    const resp = await weapiPost<{
+    const resp = await invokeNcm<{
       code?: number;
       result?: { id: number | string; name: string; picUrl?: string; playCount?: number; trackCount?: number; copywriter?: string; alg?: string }[];
-    }>("https://music.163.com/weapi/personalized/playlist", { limit: 30, total: true, n: 1000 });
+    }>("personalized", { limit: 30 });
 
-    if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
+    if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
 
-    return (resp.result ?? []).map((item) => {
+    return (resp.body.result ?? []).map((item) => {
       const copywriter = (item.copywriter ?? "").trim();
       return {
         source: "netease",
@@ -685,14 +626,14 @@ export const netease: MusicProvider = {
   // ---- PlaylistCategoryProvider ----
 
   async getPlaylistCategories(): Promise<PlaylistCategory[]> {
-    const resp = await weapiPost<{
+    const resp = await invokeNcm<{
       code?: number;
       categories?: Record<string, string>;
       all?: { name?: string; hot?: boolean; resourceCount?: number };
       sub?: { name?: string; category?: number; hot?: boolean; resourceCount?: number }[];
-    }>("https://music.163.com/weapi/playlist/catalogue", { csrf_token: "" });
+    }>("playlist_catlist");
 
-    if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
+    if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
 
     const categories: PlaylistCategory[] = [
       {
@@ -700,18 +641,18 @@ export const netease: MusicProvider = {
         id: "",
         name: "全部",
         group: "全部",
-        count: resp.all?.resourceCount ?? 0,
-        hot: resp.all?.hot ?? false,
+        count: resp.body.all?.resourceCount ?? 0,
+        hot: resp.body.all?.hot ?? false,
       },
     ];
-    for (const item of resp.sub ?? []) {
+    for (const item of resp.body.sub ?? []) {
       const name = (item.name ?? "").trim();
       if (!name) continue;
       categories.push({
         source: "netease",
         id: name,
         name,
-        group: resp.categories?.[String(item.category ?? "")] ?? "",
+        group: resp.body.categories?.[String(item.category ?? "")] ?? "",
         count: item.resourceCount ?? 0,
         hot: item.hot ?? false,
         extra: { category: String(item.category ?? 0) },
@@ -727,21 +668,19 @@ export const netease: MusicProvider = {
     if (limit <= 0) limit = 30;
     if (limit > 100) limit = 100;
 
-    const resp = await weapiPost<{
+    const resp = await invokeNcm<{
       code?: number;
       playlists?: NeteasePlaylistItem[];
-    }>("https://music.163.com/weapi/playlist/list", {
+    }>("top_playlist", {
       cat: categoryID,
       order: "hot",
       limit,
       offset: (page - 1) * limit,
-      total: page === 1,
-      csrf_token: "",
     });
 
-    if (resp.code !== 200) throw new Error(`netease api error code: ${resp.code}`);
+    if (resp.body.code !== 200) throw new Error(`netease api error code: ${resp.body.code}`);
 
-    return (resp.playlists ?? []).map((item) => ({
+    return (resp.body.playlists ?? []).map((item) => ({
       source: "netease",
       id: String(item.id),
       name: (item.name ?? "").trim(),
@@ -764,32 +703,27 @@ export const netease: MusicProvider = {
     if (limit <= 0) limit = 30;
     if (limit > 100) limit = 100;
 
-    const accountResp = await weapiPost<{
+    const accountResp = await invokeNcm<{
       code?: number;
       profile?: { userId?: number; nickname?: string };
-    }>("https://music.163.com/weapi/nuser/account/get", { csrf_token: "" });
+    }>("user_account");
 
-    const userID = accountResp.profile?.userId ?? 0;
-    if (accountResp.code !== 200 || !userID) {
-      throw new Error(`netease account api error code: ${accountResp.code}`);
+    const userID = accountResp.body.profile?.userId ?? 0;
+    if (accountResp.body.code !== 200 || !userID) {
+      throw new Error(`netease account api error code: ${accountResp.body.code}`);
     }
 
-    const resp = await weapiPost<{ code?: number; playlist?: NeteasePlaylistItem[] }>(
-      "https://music.163.com/weapi/user/playlist",
-      {
-        uid: userID,
-        limit,
-        offset: (page - 1) * limit,
-        includeVideo: true,
-        csrf_token: "",
-      },
-    );
+    const resp = await invokeNcm<{ code?: number; playlist?: NeteasePlaylistItem[] }>("user_playlist", {
+      uid: userID,
+      limit,
+      offset: (page - 1) * limit,
+    });
 
-    if (resp.code !== 200) throw new Error(`netease user playlist api error code: ${resp.code}`);
+    if (resp.body.code !== 200) throw new Error(`netease user playlist api error code: ${resp.body.code}`);
 
-    return (resp.playlist ?? []).map((item) => {
+    return (resp.body.playlist ?? []).map((item) => {
       const playlistID = String(item.id);
-      const creator = (item.creator?.nickname ?? "").trim() || (accountResp.profile?.nickname ?? "");
+      const creator = (item.creator?.nickname ?? "").trim() || (accountResp.body.profile?.nickname ?? "");
       return {
         source: "netease",
         id: playlistID,
@@ -811,11 +745,10 @@ export const netease: MusicProvider = {
   // ---- QRLoginProvider ----
 
   async createQRLogin(): Promise<QRLoginSession> {
-    const resp = await postQRLogin(QR_KEY_API, { type: "3" });
-    const data = JSON.parse(resp.body) as { code?: number; unikey?: string };
-    const key = (data.unikey ?? "").trim();
-    if (data.code !== 200 || !key) {
-      throw new Error(`netease qr key api error: code=${data.code}`);
+    const resp = await invokeNcm<{ code?: number; data?: { unikey?: string } }>("login_qr_key");
+    const key = (resp.body.data?.unikey ?? "").trim();
+    if (resp.body.code !== 200 || !key) {
+      throw new Error(`netease qr key api error: code=${resp.body.code}`);
     }
     return {
       source: "netease",
@@ -829,20 +762,32 @@ export const netease: MusicProvider = {
     const trimmed = key.trim();
     if (!trimmed) throw new Error("netease qr login key is empty");
 
-    const resp = await postQRLogin(QR_CHECK_API, { key: trimmed, type: "3" });
-    const data = JSON.parse(resp.body) as { code?: number; message?: string; cookie?: string };
+    const resp = await invokeNcm<{ code?: number; message?: string; cookie?: string }>(
+      "login_qr_check",
+      { key: trimmed },
+    );
 
-    const status = mapNeteaseQRStatus(data.code ?? 0);
+    const status = mapNeteaseQRStatus(resp.body.code ?? 0);
     const result: QRLoginResult = {
       source: "netease",
       key: trimmed,
       status,
-      message: data.message,
-      extra: { code: String(data.code ?? 0) },
+      message: resp.body.message,
+      extra: { code: String(resp.body.code ?? 0) },
     };
     if (status === "success") {
-      result.cookie = (data.cookie ?? "").trim() || joinCookieMap(resp.cookies);
-      result.cookies = resp.cookies;
+      const cookieStr = (resp.body.cookie ?? "").trim();
+      result.cookie = cookieStr;
+      result.cookies = cookieToJson(cookieStr);
+      // 登录成功：合并存储（module cookie 数组更全，包含 MUSIC_U）
+      if (resp.cookie?.length) {
+        try {
+          const { mergeStoredCookie } = await import("../netease");
+          mergeStoredCookie(resp.cookie);
+        } catch {
+          /* 存储失败不影响登录结果 */
+        }
+      }
     }
     return result;
   },

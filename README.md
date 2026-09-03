@@ -12,8 +12,8 @@
 | 后端 | Route Handlers（Node runtime，流式转发 / Range 透传 / 并行分块下载） |
 | 存储 | better-sqlite3（歌单 / 下载记录 / 去重 / Cookie / 本地音乐索引 / 设置）+ music-metadata（音频元数据，等价 Go tag+ffprobe 职责） |
 | 媒体 | ffmpeg（PATH → `MUSIC_DL_FFMPEG` → **ffmpeg-static 内置二进制** 三级解析，元数据嵌入与视频合成开箱即用） |
-| 加密 | Node 内置 crypto（网易云 weapi/linux eapi、QQ QRC 变体 3DES、酷狗 KRC、酷我 zlib+XOR+GB18030、汽水 PlayAuth/CENC 解密等） |
-| 测试 | vitest（65 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度） |
+| 加密 | Node 内置 crypto（网易云 weapi/eapi/linuxapi/**xeapi** 五通道全量、QQ QRC 变体 3DES、酷狗 KRC、酷我 zlib+XOR+GB18030、汽水 PlayAuth/CENC 解密等） |
+| 测试 | vitest（85 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度 / **网易云 439 接口注册表完整性**） |
 
 ## 音源支持矩阵（13 源）
 
@@ -76,6 +76,17 @@
 | （Go 无对应） | `GET /api/system/status` | 环境状态（ffmpeg 可用性/来源、下载目录、版本） |
 | 页面路由 `/recommend` `/playlist` `/my_collections` 等 | 前端页面 `/explore` `/playlist` `/collections` 等 | Go 的 HTML 渲染页由 SPA 页面承担，语义对应 |
 
+## 网易云 API 全量迁移（api-enhanced）
+
+底层网易云能力整体切换为 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（MIT）的 **439 个接口全量 TypeScript 移植**，路由规则与其 server.js 1:1（文件名下划线转斜杠，`daily_signin`/`fm_trash`/`personal_fm` 三个特殊路由原样）：
+
+- **核心运行时** `lib/netease/`：五套加密通道（weapi / eapi / linuxapi / xeapi(X25519+AES-GCM) / api）、cookie 加工（NMTID 采集 / 匿名游客 token 惰性注册并持久化 `data/netease-anonymous-token.json`）、易盾反作弊 token（v3 直连；v2 jsdom 正式依赖 + 本地 vendor 脚本 `lib/netease/vendor/dun-tool.min.js` SHA-256 校验，沙箱禁远端子资源）、随机中国 IP、NCBL 打卡加密 — 零第三方加密依赖（Node 内置 crypto/zlib）
+- **接口模块** `lib/netease/modules/`：439 个接口按功能家族合并为 **23 个组文件**（account / song / comment / dj / playlist…），组内命名导出 + 顶层辅助变量模块前缀隔离；含云盘/声音上传、NCBL scrobble、checktoken、xeapikey 等手工移植实现，上传类接口支持 multipart 文件
+- **统一入口**：`GET/POST /api/netease/<route>`（如 `/api/netease/login/qr/key`、`/api/netease/song/url/v1`），或进程内 `invokeNcm("<name>", params)`；未显式传 cookie 自动注入 SQLite 存储的登录态，响应 `Set-Cookie` 自动合并回存储（登录接口即存即用）；支持文档级参数：`cookie` / `realIP` / `randomCNIP` / `ua` / `noCookie` / `e_r` / `proxy`（http/https 代理，undici ProxyAgent；PAC 暂不支持）、GET 200 响应 2 分钟缓存（对齐源 apicache，防网易 IP 高频）
+- **前端控制台** `/netease`：439 接口分类浏览 / 实时搜索 / 在线调试（参数编辑、状态码与耗时、JSON 响应、路由复制）
+- **Provider 降级耦合**：`lib/providers/netease.ts` 业务映射（Song/Playlist、VIP 判定缓存、下载直链缓存、链接解析、yrc 逐字歌词）全部保留，底层请求尽数改走新模块系统（`cloudsearch`/`song_detail`/`song_url_v1`/`lyric_new`/`album`/`playlist_detail`/`personalized`/`playlist_catlist`/`top_playlist`/`user_account`/`user_playlist`/`login_qr_*`）
+- 全量清单见 `docs/netease-api-inventory.md`（439 项 / 23 分类，含每个接口的 HTTP 路由与实现方式）
+
 ## 前端功能
 
 - **聚合搜索**：单曲/歌单/专辑三种类型 + 13 源多选筛选 + 分享链接自动识别解析
@@ -83,6 +94,7 @@
 - **我的歌单**：自建歌单 CRUD、外部歌单/专辑导入、单曲/批量收藏、本地音乐入库
 - **本地音乐**：扫描/上传/删除/重复检测/播放缓存，内嵌封面与歌词自动读取
 - **播放器**：全局播放条 + 全屏播放页（**卡拉 OK 逐字高亮**：网易云 YRC / QQ QRC / 酷狗 KRC 词级歌词逐词渐变着色 + 罗马音/译文副行，其他渠道行级渐变；点击跳播）、**Range 实测音质徽章**（码率·大小）、队列管理、随机/循环、空格键控制、MediaSession（系统媒体键/锁屏控制）、失效自动换源
+- **API 控制台**（`/netease`）：网易云 439 接口分类浏览 / 实时搜索 / 在线调试（GET·POST、动态参数、状态码与耗时、JSON 响应复制）
 - **设置**：扫码登录（网易云/QQ/酷狗/酷我/B站）、手动 Cookie、播放与下载选项（元数据嵌入 / 服务器落盘 / 并发数 / 文件名模板）、WebDAV 同步、GitHub 更新源与代理、下载记录
 - **双端适配**：PC 侧边栏布局 + 移动底部 Tab/mini 播放条，触控目标 ≥44px，动效遵循 `prefers-reduced-motion`
 
@@ -91,7 +103,7 @@
 ```bash
 npm install
 npm run dev        # 开发模式（Turbopack），打开 http://localhost:3000
-npm test           # 运行 65 例单元测试（vitest）
+npm test           # 运行 85 例单元测试（vitest）
 ```
 
 生产模式：
@@ -129,8 +141,9 @@ npm run build && npm start
 │   ├── write-guard.ts           # save_local 写保护（POST+XHR+同源）
 │   ├── cookies.ts similarity.ts local-music.ts web-core.ts
 │   ├── crypto.ts qrc.ts soda-crypto.ts
+│   ├── netease/                 # api-enhanced 全量移植：五通道加密运行时 + 439 接口模块 + 注册表
 │   └── registry.ts types.ts     # 源注册表与契约
-├── tests/                       # vitest 单元测试（65 例）
+├── tests/                       # vitest 单元测试（85 例）
 └── next.config.ts tsconfig.json vitest.config.ts
 ```
 
