@@ -589,3 +589,14 @@
 | `yunbei_tasks_todo` | `/api/netease/yunbei/tasks/todo` | yunbei.ts |
 | `yunbei_today` | `/api/netease/yunbei/today` | yunbei.ts |
 
+---
+
+## 类型安全边界声明（审核 5.3 / A-26 豁免登记）
+
+> 依据《商业化上线审核标准》5.3"any 仅限与上游交互的边界处且收敛在 adapter 层"，`lib/netease/` 目录（含 `modules/` 生成文件）整体定位为 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（MIT）的 **adapter 移植层**，登记以下整目录豁免，替代逐处修改：
+
+- **豁免范围**：`lib/netease/**`（运行时 request/crypto/option/logger + `modules/` 23 个组文件）中约 73+ 处 `any` / `as any` / `Record<string, any>`。性质为上游 JS 库的动态结构边界（加密通道参数、上游响应体、模块 query），与被仿对象逐一核对签名后保留。
+- **不改写 `modules/` 生成文件的约束**：`lib/netease/modules/*.ts` 由 `scripts/convert-netease-modules.mjs` 自动转换生成（文件头标注"请勿手工修改"），其中 `process.env.PROXY_URL` / `ENABLE_PROXY` 直读（song.ts 等）维持上游语义原样保留；如需收敛应改转换脚本并重新生成，而非手改产物。手工维护部分（request.ts / option.ts / logger.ts / checktoken.ts 等）的环境变量已接入 `lib/env.ts` 集中读取（审核 A-27）。
+- **防护锚点**：注册表完整性由 `tests/netease-registry.test.ts`（439 项防遗漏/防路由漂移）锚定；`tsc --noEmit` 全仓零错误（该目录不含 `@ts-nocheck` / 文件级 eslint-disable，豁免仅为 any 收敛策略的登记，非类型检查豁免）。
+- **约束**：新代码不得再引入新的非边界 `any`；上游同步再生成时需重跑 `npx tsc --noEmit` 与注册表测试。
+

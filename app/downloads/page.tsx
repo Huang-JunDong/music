@@ -34,18 +34,25 @@ export default function DownloadsPage() {
   const [status, setStatus] = useState<StatusFilter>("");
   const [data, setData] = useState<{ records: DownloadRecord[]; total: number; total_pages: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  /** 审核整改 A-28：加载失败与空数据区分展示，不再落误导性空态 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
 
   const load = useCallback(
     (p: number, s: StatusFilter) => {
       setLoading(true);
+      setLoadError(null);
       apiDownloadRecords(p, pageSize, s)
         .then((r) => {
           setData(r);
           setPage(r.page);
         })
-        .catch((e) => toast.error(e instanceof Error ? e.message : "加载失败"))
+        .catch((e) => {
+          const message = e instanceof Error ? e.message : "加载失败";
+          setLoadError(message);
+          toast.error(message);
+        })
         .finally(() => setLoading(false));
     },
     [pageSize],
@@ -140,6 +147,20 @@ export default function DownloadsPage() {
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="shimmer h-[58px] rounded-xl" />
           ))}
+        </div>
+      ) : loadError ? (
+        /* 审核整改 A-28：失败态错误卡 + 重试入口（区别于空态） */
+        <div className="flex flex-col items-center gap-3 py-20 text-center" role="alert">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10">
+            <XCircle className="h-7 w-7 text-red-300/80" aria-hidden="true" />
+          </span>
+          <p className="max-w-sm text-sm leading-relaxed text-red-300/90">{loadError}</p>
+          <button
+            onClick={() => load(1, status)}
+            className="mt-1 flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
+          >
+            <RefreshCcw className="h-4 w-4" aria-hidden="true" /> 重新加载
+          </button>
         </div>
       ) : !data || data.records.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">

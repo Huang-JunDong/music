@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDB } from "@/lib/store";
 import type { CollectionRow } from "@/lib/collections";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,9 @@ export async function GET(req: NextRequest) {
 
 /** POST /api/collections {name, description, cover} → 创建 manual 歌单 */
 export async function POST(req: NextRequest) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   let body: { name?: string; description?: string; cover?: string };
   try {
     body = (await req.json()) as typeof body;

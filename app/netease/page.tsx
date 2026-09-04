@@ -5,7 +5,7 @@
  * 数据源 GET /api/netease（分组清单）；请求走 /api/netease<route>
  * 设计：Swiss 极简 + 高密度仪表盘（对齐项目暗色 tokens，等宽代码区）
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import {
   Terminal,
@@ -58,7 +58,6 @@ export default function NeteaseConsolePage() {
   const [sending, setSending] = useState(false);
   const [response, setResponse] = useState<ResponseState | null>(null);
   const [copied, setCopied] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/netease", { cache: "no-store" })
@@ -239,7 +238,7 @@ export default function NeteaseConsolePage() {
       <div className="grid gap-4 lg:grid-cols-[190px_1fr_minmax(0,440px)]">
         {/* ── 分类侧栏 ── */}
         <nav
-          className="glass hidden max-h-[calc(100vh-220px)] flex-col gap-0.5 overflow-y-auto rounded-2xl border border-white/[0.07] p-2 lg:sticky lg:top-4 lg:flex"
+          className="glass hidden max-h-[calc(100dvh-220px)] flex-col gap-0.5 overflow-y-auto rounded-2xl border border-white/[0.07] p-2 lg:sticky lg:top-4 lg:flex"
           aria-label="接口分类"
         >
           <CategoryButton
@@ -262,8 +261,7 @@ export default function NeteaseConsolePage() {
 
         {/* ── 接口列表 ── */}
         <div
-          ref={listRef}
-          className="glass max-h-[calc(100vh-220px)] min-h-[320px] overflow-y-auto rounded-2xl border border-white/[0.07] p-2"
+          className="glass max-h-[calc(100dvh-220px)] min-h-[320px] overflow-y-auto rounded-2xl border border-white/[0.07] p-2"
           role="list"
         >
           {!inventory && !loadError && <ListSkeleton />}
@@ -275,7 +273,7 @@ export default function NeteaseConsolePage() {
           )}
           {Object.entries(filtered).map(([cat, list]) => (
             <div key={cat} className="mb-1">
-              <p className="sticky top-0 z-[1] bg-[#12121a]/95 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 backdrop-blur-sm">
+              <p className="sticky top-0 z-[1] bg-surface-console/95 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 backdrop-blur-sm">
                 {cat} · {list.length}
               </p>
               {list.map((entry) => {
@@ -315,7 +313,7 @@ export default function NeteaseConsolePage() {
         </div>
 
         {/* ── 调试面板 ── */}
-        <section className="glass flex max-h-[calc(100vh-220px)] min-h-[320px] flex-col overflow-hidden rounded-2xl border border-white/[0.07]">
+        <section className="glass flex max-h-[calc(100dvh-220px)] min-h-[320px] flex-col overflow-hidden rounded-2xl border border-white/[0.07]">
           {!selected ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-zinc-500">
               <Terminal className="h-8 w-8" aria-hidden="true" />

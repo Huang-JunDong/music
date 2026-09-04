@@ -103,7 +103,7 @@ function ExploreInner() {
       />
 
       {/* ---------- sticky tab（layoutId 滑动 pill） ---------- */}
-      <div className="sticky top-[61px] z-20 -mx-4 bg-gradient-to-b from-[#0b0b12] via-[#0b0b12]/92 to-transparent px-4 pb-2 pt-2 backdrop-blur-sm lg:top-0 lg:-mx-8 lg:px-8">
+      <div className="sticky top-[61px] z-20 -mx-4 bg-gradient-to-b from-surface-sticky via-surface-sticky/92 to-transparent px-4 pb-2 pt-2 backdrop-blur-sm lg:top-0 lg:-mx-8 lg:px-8">
         <div className="glass inline-flex rounded-xl border border-white/[0.07] p-1" role="tablist" aria-label="歌单广场">
           {TABS.map((t) => {
             const Icon = t.icon;
@@ -156,7 +156,9 @@ function ExploreInner() {
 /* ================= 每日推荐 ================= */
 
 function RecommendTab() {
-  const filter = selectedSourceFilter();
+  /* 惰性初始化：挂载时读一次 sessionStorage（渲染期不再同步读 storage；
+   * tab 组件随 key={tab} 卸载重挂，切回时自然拿到最新已选源） */
+  const [filter] = useState(() => selectedSourceFilter());
   const cacheKey = cacheKeyOf(filter);
   const initial = recommendCacheMap.get(cacheKey);
   const [groups, setGroups] = useState<SourcePlaylists[] | null>(initial?.tabs ?? null);
@@ -409,7 +411,8 @@ function CategoryTab() {
 /* ================= 我的收藏（登录源） ================= */
 
 function MineTab() {
-  const filter = selectedSourceFilter();
+  /* 同 RecommendTab：挂载时读一次 sessionStorage，渲染期不再同步读 storage */
+  const [filter] = useState(() => selectedSourceFilter());
   const cacheKey = cacheKeyOf(filter);
   const initial = mineCacheMap.get(cacheKey);
   const [groups, setGroups] = useState<SourcePlaylists[] | null>(initial?.tabs ?? null);

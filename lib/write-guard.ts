@@ -35,6 +35,20 @@ export function checkSaveLocalGuard(req: NextRequest): NextResponse | null {
   return null;
 }
 
+/**
+ * 通用写守卫（审核整改 A-15）：POST/PUT/DELETE/PATCH 一律要求 XHR + 同源（CSRF 防护）。
+ * 与 checkSaveLocalGuard 的区别：不依赖 save_local 参数，适用于所有有副作用的写路由。
+ * curl/脚本调用需附带 `X-Requested-With: XMLHttpRequest` 头（README 已登记）。
+ */
+export function checkWriteGuard(req: NextRequest): NextResponse | null {
+  const method = req.method.toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
+  if (!allowSameOriginWrite(req)) {
+    return NextResponse.json({ error: "forbidden (XHR + same-origin required)" }, { status: 403 });
+  }
+  return null;
+}
+
 /** saveWebAssetResponse 移植：保存到下载目录并返回 JSON */
 export function saveWebAssetResponse(filename: string, data: Buffer): NextResponse {
   try {

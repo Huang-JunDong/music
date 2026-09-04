@@ -8,8 +8,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseFile } from "music-metadata";
 import { getDB, downloadDir } from "./store";
-import { formatSizeMB } from "./web-core";
+import { formatSizeMB, likeEscape } from "./web-core";
 import { sanitizeFilename, type Song } from "./types";
+import { writeFileAtomic } from "./atomic-write";
 
 export const LOCAL_MUSIC_SOURCE = "local";
 export const LEGACY_LOCAL_MUSIC_SOURCE = "local-file";
@@ -58,6 +59,8 @@ interface LocalMusicState {
   metaCache: Map<string, { track: LocalMusicTrack; size: number; mtimeMs: number }>;
   snapshot: ScanSnapshot | null;
   refreshing: boolean;
+  /* 审核整改 A-27：metaCache 容量上限（超出淘汰最旧插入项，防随曲库无界增长） */
+  metaCacheMax: number;
   reindexing: boolean;
   autoCacheInFlight: Set<string>;
   autoCacheActive: number;
@@ -71,6 +74,7 @@ function state(): LocalMusicState {
       metaCache: new Map(),
       snapshot: null,
       refreshing: false,
+      metaCacheMax: 20_000,
       reindexing: false,
       autoCacheInFlight: new Set(),
       autoCacheActive: 0,
@@ -319,7 +323,13 @@ export async function buildLocalMusicTrack(
     missing,
     extra,
   };
-  state().metaCache.set(cacheKey, { track: cloneTrack(track), size: info.size, mtimeMs: info.mtimeMs });
+  const cacheState = state();
+  cacheState.metaCache.set(cacheKey, { track: cloneTrack(track), size: info.size, mtimeMs: info.mtimeMs });
+  // 审核整改 A-27：容量上限淘汰（Map 迭代序即插入序，删最旧）
+  if (cacheState.metaCache.size > cacheState.metaCacheMax) {
+    const oldestKey = cacheState.metaCache.keys().next().value;
+    if (oldestKey !== undefined) cacheState.metaCache.delete(oldestKey);
+  }
   return track;
 }
 
@@ -783,15 +793,19 @@ export function sanitizeLocalMusicUploadName(name: string): string {
   return base + ext;
 }
 
+/** 同名冲突附加序号的上限（审核整改 A-29：防人为堆同名文件导致无界循环） */
+const MAX_UNIQUE_PATH_ATTEMPTS = 1000;
+
 export function uniqueLocalMusicPath(dir: string, filename: string): string {
   const ext = path.extname(filename);
   const base = filename.slice(0, filename.length - ext.length);
   let candidate = path.join(dir, filename);
   if (!fs.existsSync(candidate)) return candidate;
-  for (let i = 1; ; i++) {
+  for (let i = 1; i <= MAX_UNIQUE_PATH_ATTEMPTS; i++) {
     candidate = path.join(dir, `${base} (${i})${ext}`);
     if (!fs.existsSync(candidate)) return candidate;
   }
+  throw new Error(`too many files named "${filename}" in target directory`);
 }
 
 export async function saveUploadedLocalMusic(
@@ -803,7 +817,8 @@ export async function saveUploadedLocalMusic(
   fs.mkdirSync(dir, { recursive: true });
   const rootAbs = path.resolve(dir);
   const dstPath = uniqueLocalMusicPath(rootAbs, safeName);
-  fs.writeFileSync(dstPath, data);
+  // 审核整改 A-18：tmp+rename 原子落盘，上传中断不留半成品（失败路径已有 rmSync 回滚）
+  writeFileAtomic(dstPath, data);
   try {
     const track = await buildLocalMusicTrack(rootAbs, dstPath);
     invalidateLocalMusicScanCache();
@@ -842,9 +857,11 @@ export function findLocalMusicMatch(
     }
     return null;
   };
+  /** 本地匹配每轮最多核验的候选行数（审核整改 A-29：具名常量替代裸 slice(0,20)） */
+  const LOCAL_MATCH_LOOKUP_ROWS = 20;
   const lookup = (sql: string, ...args: unknown[]): { row: IndexRow; absPath: string } | null => {
     const rows = db.prepare(sql).all(...args) as IndexRow[];
-    return findExisting(rows.slice(0, 20));
+    return findExisting(rows.slice(0, LOCAL_MATCH_LOOKUP_ROWS));
   };
   const cleanup = () => {
     if (stale.length) {
@@ -862,8 +879,8 @@ export function findLocalMusicMatch(
       );
       if (hit) return hit;
       hit = lookup(
-        "SELECT * FROM local_music_index WHERE name LIKE ? AND artist = ? ORDER BY modified_at DESC",
-        `%${name}%`,
+        "SELECT * FROM local_music_index WHERE name LIKE ? ESCAPE '\\' AND artist = ? ORDER BY modified_at DESC",
+        `%${likeEscape(name)}%`,
         artist,
       );
       return hit;
@@ -874,8 +891,8 @@ export function findLocalMusicMatch(
     );
     if (hit) return hit;
     return lookup(
-      "SELECT * FROM local_music_index WHERE name LIKE ? ORDER BY modified_at DESC",
-      `%${name}%`,
+      "SELECT * FROM local_music_index WHERE name LIKE ? ESCAPE '\\' ORDER BY modified_at DESC",
+      `%${likeEscape(name)}%`,
     );
   } finally {
     cleanup();
@@ -888,11 +905,11 @@ export function findLocalMusicMatch(
 export function localMusicSearchSongs(keyword: string, limit = 200): Song[] {
   keyword = (keyword ?? "").trim();
   if (!keyword) return [];
-  const like = `%${keyword}%`;
+  const like = `%${likeEscape(keyword)}%`;
   const db = getDB();
   const rows = db
     .prepare(
-      "SELECT * FROM local_music_index WHERE name LIKE ? OR artist LIKE ? OR album LIKE ? ORDER BY modified_at DESC LIMIT ?",
+      "SELECT * FROM local_music_index WHERE name LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\' ORDER BY modified_at DESC LIMIT ?",
     )
     .all(like, like, like, limit) as IndexRow[];
 

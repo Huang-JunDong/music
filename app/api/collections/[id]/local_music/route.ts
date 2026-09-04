@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDB } from "@/lib/store";
 import { isImported, loadCollection } from "@/lib/collections";
 import { LOCAL_MUSIC_SOURCE, localMusicTrackByID } from "@/lib/local-music";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** POST /api/collections/[id]/local_music {id} — 本地音乐加入收藏歌单（响应对齐 Go SavedSong） */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const collection = loadCollection(id);
   if (!collection) {

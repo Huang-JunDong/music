@@ -17,6 +17,14 @@ import {
 export const RECOMMEND_SOURCE_NAMES = ["netease", "qq", "kugou", "kuwo"];
 export const USER_PLAYLIST_SOURCE_NAMES = ["netease", "qq", "kugou", "soda"];
 
+/**
+ * LIKE 元字符转义（审核整改 A-25）：配合 SQL 中 ESCAPE '\' 使用，
+ * 防用户输入 %/_ 强制全表扫描。用法：`... LIKE ? ESCAPE '\'` + `"%"+likeEscape(kw)+"%"`。
+ */
+export function likeEscape(keyword: string): string {
+  return (keyword ?? "").replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export function defaultSourcesForSearchType(searchType: string): string[] {
   switch (searchType) {
     case "playlist":

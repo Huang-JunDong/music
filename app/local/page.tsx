@@ -24,6 +24,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modal";
@@ -37,6 +38,7 @@ import {
   type LocalMusicResponse,
   type LocalTrack,
 } from "@/lib/client/api";
+import { useShallow } from "zustand/react/shallow";
 import { usePlayer } from "@/lib/client/store";
 import { coverProxyUrl } from "@/lib/play-url";
 import { fmtTimeClient } from "@/lib/client/ui";
@@ -99,6 +101,8 @@ function LocalMusicInner() {
   const [deleting, setDeleting] = useState<LocalTrack | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
   const [uploading, setUploading] = useState(false);
+  /** 审核整改 A-28：加载失败态（区别于空态） */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [dupOpen, setDupOpen] = useState(false);
   const [dups, setDups] = useState<DupGroup[] | null>(null);
   const [dupLoading, setDupLoading] = useState(false);
@@ -112,7 +116,16 @@ function LocalMusicInner() {
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
-  const { queue, index, playing, play, toggle } = usePlayer();
+  /* useShallow 精确订阅：播放中 currentTime 4-8Hz 更新不再触发整页（单页最多 200 行）重渲染 */
+  const { queue, index, playing, play, toggle } = usePlayer(
+    useShallow((s) => ({
+      queue: s.queue,
+      index: s.index,
+      playing: s.playing,
+      play: s.play,
+      toggle: s.toggle,
+    })),
+  );
   const currentSong = index >= 0 ? queue[index] : null;
   const isCurrent = (t: LocalTrack) => currentSong?.id === t.id && currentSong?.source === "local";
 
@@ -155,13 +168,17 @@ function LocalMusicInner() {
         const r = await attempt();
         if (seq !== seqRef.current || ac.signal.aborted) return; // 已有更新请求，丢弃
         setResp(r);
+        setLoadError(null);
         setPage(targetPage);
         // URL ?page= 状态保持
         window.history.replaceState(null, "", targetPage > 1 ? `/local?page=${targetPage}` : "/local");
         if (opts.refresh) toast.success(r.exists ? `已重新扫描 · 共 ${r.total} 首` : "目录为空或不存在");
       } catch (e) {
         if (seq !== seqRef.current || ac.signal.aborted) return;
-        toast.error(e instanceof Error ? e.message : "加载本地音乐失败");
+        // 审核整改 A-28：失败态持久展示（区别于空态），不再误导"还没有本地音乐"
+        const message = e instanceof Error ? e.message : "加载本地音乐失败";
+        setLoadError(message);
+        toast.error(message);
       } finally {
         if (seq === seqRef.current) setLoading(false);
       }
@@ -441,6 +458,20 @@ function LocalMusicInner() {
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="h-[68px] animate-pulse rounded-2xl bg-white/[0.035]" style={{ animationDelay: `${i * 60}ms` }} />
           ))}
+        </div>
+      ) : loadError ? (
+        /* 审核整改 A-28：失败态错误卡 + 重试入口（区别于空态） */
+        <div className="flex flex-col items-center gap-3 py-16 text-center" role="alert">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10">
+            <TriangleAlert className="h-7 w-7 text-red-300/80" aria-hidden="true" />
+          </span>
+          <p className="max-w-sm text-sm leading-relaxed text-red-300/90">{loadError}</p>
+          <button
+            onClick={() => void loadPage(1, { refresh: true })}
+            className="mt-1 flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" /> 重新加载
+          </button>
         </div>
       ) : tracks.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-16 text-center">

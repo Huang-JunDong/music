@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findLocalMusicMatch } from "@/lib/local-music";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 审核整改 A-17：批量匹配条目上限（对齐 precheck 上限体系，防 CPU/IO 放大） */
+const MAX_BATCH_MATCH_ITEMS = 200;
 
 interface MatchItem {
   qi: number;
@@ -15,6 +19,9 @@ interface MatchItem {
 
 /** POST /api/local_music/batch_match [{name,artist}] → {matches:[{qi,id,name,artist,size,ext}]} */
 export async function POST(req: NextRequest) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   let body: { name?: string; artist?: string }[];
   try {
     body = (await req.json()) as typeof body;
@@ -23,6 +30,9 @@ export async function POST(req: NextRequest) {
   }
   if (!Array.isArray(body) || body.length === 0) {
     return NextResponse.json({ error: "invalid request" }, { status: 400 });
+  }
+  if (body.length > MAX_BATCH_MATCH_ITEMS) {
+    return NextResponse.json({ error: `批量匹配条目过多（上限 ${MAX_BATCH_MATCH_ITEMS}）` }, { status: 413 });
   }
 
   const matches: MatchItem[] = [];

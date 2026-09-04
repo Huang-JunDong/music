@@ -2,11 +2,12 @@
  * 视频歌词渲染会话 — 移植 internal/web/videogen.go（会话存内存，
  * ffmpeg 检测 where/which，拼帧 + 音频合成 mp4）。
  */
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ffmpegPath } from "./env";
 
 export interface RenderSession {
   id: string;
@@ -48,12 +49,36 @@ export function takeSession(sessionId: string): RenderSession | null {
   return sess;
 }
 
+/** 会话与帧数上限（审核 5.4 / A-06：未授权可反复 init+frame，须防内存/磁盘耗尽） */
+export const MAX_RENDER_SESSIONS = 32;
+/** 3 分钟 @30fps 上限，超出视为异常请求（正常逐字歌词渲染远小于此） */
+export const MAX_FRAMES_PER_SESSION = 5400;
+
+export class VideogenSessionLimitError extends Error {
+  constructor() {
+    super(`too many active render sessions (max ${MAX_RENDER_SESSIONS})`);
+    this.name = "VideogenSessionLimitError";
+  }
+}
+
+export class VideogenFrameLimitError extends Error {
+  constructor(max: number) {
+    super(`frame limit exceeded: max ${max} frames per session`);
+    this.name = "VideogenFrameLimitError";
+  }
+}
+
 export function createSession(input: {
   songId: string;
   source: string;
   customAudioPath?: string;
   audioUrl?: string;
 }): RenderSession {
+  // 审核整改 A-06：入口惰性清理超时会话（原 cleanupOldSessions 为死代码，会话/帧永不释放）
+  cleanupOldSessions();
+  if (state().sessions.size >= MAX_RENDER_SESSIONS) {
+    throw new VideogenSessionLimitError();
+  }
   const sanitizedId = (input.songId ?? "").replace(/[|/:\\]/g, "-");
   const sessionId = `${input.source}_${sanitizedId}_${Math.floor(Date.now() / 1000)}`;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `vg_render_${sessionId}_`));
@@ -73,10 +98,13 @@ export function createSession(input: {
   return session;
 }
 
-/** 按序追加帧（startIdx 必须等于当前总数，防止乱序/重复） */
+/** 按序追加帧（startIdx 必须等于当前总数，防止乱序/重复；总量上限防资源耗尽，审核 A-06） */
 export function addFrames(session: RenderSession, frames: Buffer[], startIdx: number): Error | null {
   if (startIdx !== session.total) {
     return new Error(`frame batch out of order: got ${startIdx}, want ${session.total}`);
+  }
+  if (session.total + frames.length > MAX_FRAMES_PER_SESSION) {
+    return new VideogenFrameLimitError(MAX_FRAMES_PER_SESSION);
   }
   for (const frame of frames) session.frames.push(frame);
   session.total += frames.length;
@@ -92,7 +120,7 @@ export function cleanupSession(session: RenderSession): void {
   }
 }
 
-/** 清理超时会话（30 分钟） */
+/** 清理超时会话（30 分钟；由 createSession 入口惰性触发，审核 A-06） */
 export function cleanupOldSessions(maxIdleMs = 30 * 60_000): void {
   const now = Date.now();
   for (const [id, sess] of state().sessions) {
@@ -103,14 +131,41 @@ export function cleanupOldSessions(maxIdleMs = 30 * 60_000): void {
   }
 }
 
+/** 优雅退出（审核 5.10 / A-19）：SIGTERM/SIGINT 时清空全部会话与临时目录 */
+export function shutdownVideogen(): void {
+  for (const sess of state().sessions.values()) cleanupSession(sess);
+  state().sessions.clear();
+}
+
+/** 启动清扫：删除上次运行遗留的 vg_render_* 临时目录（含上传音频；审核 A-19） */
+export function sweepAbandonedVideogenTempDirs(): void {
+  const tmp = os.tmpdir();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tmp);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith("vg_render_")) continue;
+    try {
+      fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
+    } catch {
+      /* 单个目录清理失败不阻断 */
+    }
+  }
+}
+
 /* ---------------- ffmpeg ---------------- */
 
 let ffmpegCache: string | null | undefined;
 
 function runCommand(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    exec(
-      [cmd, ...args.map((a) => `"${a}"`)].join(" "),
+    // 审核整改 A-01：execFile 直传参数数组（不经 shell），彻底消除引号拼接命令注入面
+    execFile(
+      cmd,
+      args,
       { windowsHide: true, timeout: 10_000 },
       (err, stdout) => {
         if (err) reject(err);
@@ -133,7 +188,7 @@ export async function resolveFFmpeg(): Promise<string | null> {
   } catch {
     /* fallthrough */
   }
-  const envPath = (process.env.MUSIC_DL_FFMPEG ?? "").trim();
+  const envPath = ffmpegPath();
   if (envPath) {
     ffmpegCache = envPath;
     return ffmpegCache;
@@ -204,8 +259,10 @@ export async function renderVideo(
   args.push(outPath);
 
   await new Promise<void>((resolve, reject) => {
-    exec(
-      [ffmpeg, ...args.map((a) => `"${a}"`)].join(" "),
+    // 审核整改 A-01：execFile 直传参数数组（不经 shell），配合 init 路由的输入白名单
+    execFile(
+      ffmpeg,
+      args,
       { windowsHide: true, cwd: session.tempDir, timeout: options.timeoutMs ?? 180_000, maxBuffer: 8 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         if (err) {

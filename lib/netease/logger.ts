@@ -1,5 +1,7 @@
 /** 极简 logger — 对齐 api-enhanced util/logger.js 的接口面（info/warn/error/debug） */
 /* eslint-disable no-console */
+import { ncmDebug } from "../env";
+
 const tag = "[ncm]";
 export const logger = {
   info(...args: unknown[]) {
@@ -12,6 +14,6 @@ export const logger = {
     console.error(tag, ...args);
   },
   debug(...args: unknown[]) {
-    if (process.env.NCM_DEBUG === "true") console.debug(tag, ...args);
+    if (ncmDebug()) console.debug(tag, ...args);
   },
 };

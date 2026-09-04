@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllCookies, setAllCookies } from "@/lib/cookies";
 import { requireAuth } from "@/lib/auth";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,8 @@ export async function HEAD() {
 export async function POST(req: NextRequest) {
   const denied = requireAuth(req);
   if (denied) return NextResponse.json(denied.body, { status: denied.status });
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
 
   let body: unknown;
   try {

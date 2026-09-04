@@ -22,6 +22,9 @@ import {
   CloudUpload,
   GitBranch,
   ServerCog,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Modal, ConfirmDialog } from "@/components/modal";
@@ -35,6 +38,7 @@ import {
   apiDownloadRecords,
   apiClearDownloadRecords,
   apiSystemStatus,
+  apiPasswordChange,
   type SystemStatus,
   type DownloadRecord,
 } from "@/lib/client/api";
@@ -64,8 +68,129 @@ export default function SettingsPage() {
         <CookieSection onSaved={refreshCookies} />
         <PlaybackSection />
         <DownloadsSection />
+        <PasswordSection />
       </div>
     </div>
+  );
+}
+
+/* ================= 账号安全：修改密码（审核补充：登录体系完善） ================= */
+
+function PasswordSection() {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+
+  const save = async () => {
+    if (newPassword.length < 6) {
+      toast.error("新密码至少 6 位");
+      return;
+    }
+    if (newPassword !== confirm) {
+      toast.error("两次输入的密码不一致");
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiPasswordChange({ old_password: oldPassword, new_password: newPassword, confirm_password: confirm });
+      toast.success("密码已修改（当前会话已续期）");
+      setOldPassword("");
+      setNewPassword("");
+      setConfirm("");
+      setOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "修改失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35 }}
+      className="glass rounded-3xl border border-white/[0.07] p-5"
+      aria-label="账号安全"
+    >
+      <h2 className="flex items-center gap-2 text-[15px] font-bold text-zinc-100">
+        <KeyRound className="h-4 w-4 text-fuchsia-300" aria-hidden="true" /> 账号安全
+      </h2>
+      <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+        修改管理员登录密码；忘记密码可在登录页通过服务端日志重置令牌找回
+      </p>
+
+      {!open ? (
+        <button
+          onClick={() => setOpen(true)}
+          className="mt-3 flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-4 text-[13px] font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
+        >
+          <KeyRound className="h-4 w-4" aria-hidden="true" /> 修改密码
+        </button>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3">
+          <PwField label="旧密码" value={oldPassword} onChange={setOldPassword} autoComplete="current-password" />
+          <PwField label="新密码（至少 6 位）" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+          <PwField label="确认新密码" value={confirm} onChange={setConfirm} autoComplete="new-password" />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setOpen(false)}
+              className="h-11 rounded-xl border border-white/[0.1] px-4 text-[13px] text-zinc-400 transition-colors hover:text-zinc-200"
+            >
+              取消
+            </button>
+            <button
+              onClick={save}
+              disabled={busy || !oldPassword || !newPassword}
+              className="flex h-11 items-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-5 text-[13px] font-semibold text-white shadow-lg shadow-fuchsia-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" aria-hidden="true" />}
+              确认修改
+            </button>
+          </div>
+        </div>
+      )}
+    </motion.section>
+  );
+}
+
+/** 密码输入（带显隐切换，对齐登录页交互）：显示状态内聚在字段内，三个字段互不影响 */
+function PwField({
+  label,
+  value,
+  onChange,
+  autoComplete,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium text-zinc-400">{label}</span>
+      <span className="relative">
+        <input
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete={autoComplete}
+          className="h-11 w-full rounded-xl input-shell px-3.5 pr-12 text-sm text-zinc-200"
+        />
+        <button
+          type="button"
+          onClick={() => setShow((v) => !v)}
+          aria-label={show ? "隐藏密码" : "显示密码"}
+          aria-pressed={show}
+          className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:text-zinc-200"
+        >
+          {show ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
+        </button>
+      </span>
+    </label>
   );
 }
 

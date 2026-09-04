@@ -9,6 +9,8 @@ import {
   syncTracksToIndexAsync,
   trackJSON,
 } from "@/lib/local-music";
+import { requireAuth } from "@/lib/auth";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,14 +85,28 @@ export async function GET(req: NextRequest) {
   });
 }
 
-/** DELETE /api/local_music?id= — 硬删除（磁盘文件 + 索引行） */
+/** DELETE /api/local_music?id= — 硬删除（磁盘文件 + 索引行）
+ *  审核整改 A-04/A-15：破坏性文件操作纳入鉴权 + 写守卫。 */
 export async function DELETE(req: NextRequest) {
+  const denied = requireAuth(req);
+  if (denied) return NextResponse.json(denied.body, { status: denied.status });
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const id = req.nextUrl.searchParams.get("id") ?? "";
   try {
     const { deleteLocalMusicTrack } = await import("@/lib/local-music");
     await deleteLocalMusicTrack(id);
     return NextResponse.json({ status: "ok" });
-  } catch {
-    return NextResponse.json({ error: "本地音乐不存在或已不在下载目录内" }, { status: 400 });
+  } catch (err) {
+    // 审核整改 A-24：区分 404（文件已不存在）/ 400（id 非法）/ 500（其他失败），不再统一 400
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("ENOENT")) {
+      return NextResponse.json({ error: "本地音乐不存在或已不在下载目录内" }, { status: 404 });
+    }
+    if (/empty local music id|invalid local music path|escaped root/.test(msg)) {
+      return NextResponse.json({ error: "无效的本地音乐 ID" }, { status: 400 });
+    }
+    return NextResponse.json({ error: "删除本地音乐失败" }, { status: 500 });
   }
 }

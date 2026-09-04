@@ -86,7 +86,8 @@ interface PlayerState {
 
 /* 模块级 audio 单例 */
 let audio: HTMLAudioElement | null = null;
-function getAudio(): HTMLAudioElement {
+/** 全局 <audio> 单例访问（频谱可视化等需要直连媒体元素的模块使用） */
+export function getAudio(): HTMLAudioElement {
   if (!audio) {
     audio = new Audio();
     audio.preload = "auto";
@@ -104,7 +105,11 @@ async function fetchJSON<T>(url: string): Promise<T | null> {
   }
 }
 
+/** 歌词请求序号（审核整改 A-21）：快速切歌时旧歌词响应晚到不覆盖新歌 */
+let lyricSeq = 0;
+
 async function loadLyrics(song: Song, set: (p: Partial<PlayerState>) => void) {
+  const seq = ++lyricSeq;
   set({ lyrics: [], lyricsLoading: true, lyricFormat: "" });
   try {
     // format=auto：拿 verbatim 原文（karaoke 词级 + roma/ts 独立行），前端解析归并
@@ -112,9 +117,11 @@ async function loadLyrics(song: Song, set: (p: Partial<PlayerState>) => void) {
     const resp = await fetch(lyricUrl(song));
     const text = await resp.text();
     const format = resp.headers.get("X-Lyric-Format") ?? "";
+    if (seq !== lyricSeq) return; // 曲目已切换：丢弃过期歌词（最后写入胜出）
     const lines = parseLrcClient(text);
     set({ lyrics: lines, lyricsLoading: false, lyricFormat: format });
   } catch {
+    if (seq !== lyricSeq) return;
     set({ lyricsLoading: false });
   }
 }
@@ -235,6 +242,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       } catch {
         /* ignore */
       }
+      lyricSeq++; // 审核整改 A-21：停播后使在途歌词请求失效，不再落地
       set({ index: -1, playing: false, currentTime: 0, loading: false });
     },
 
@@ -335,6 +343,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       } catch {
         /* ignore */
       }
+      lyricSeq++; // 审核整改 A-21：清空队列后使在途歌词请求失效
       set({ queue: [], index: -1, playing: false, lyrics: [] });
     },
 

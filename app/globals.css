@@ -15,6 +15,12 @@
   --color-surface-card: rgba(24, 24, 32, 0.62);
   --color-surface-raised: rgba(255, 255, 255, 0.04);
 
+  /* 功能表面（审核整改 A-28：收编散落硬编码色值为具名 token，视觉不变） */
+  --color-surface-sticky: #0b0b12; /* sticky 头渐变底（搜索/广场 tab 条） */
+  --color-surface-platter: #10101a; /* 全屏播放页唱机底座托盘 */
+  --color-surface-console: #12121a; /* 网易控制台分组吸顶头 */
+  --color-surface-lyric-bar: #09090b; /* 移动端歌词视图返回条 */
+
   /* 边框 / 分隔（全站仅三档，禁止散落硬编码；组件类用 border-white/[0.07|0.1|0.12]） */
   --color-border-subtle: rgba(255, 255, 255, 0.07); /* 静默分隔：卡片轮廓、tab 容器 */
   --color-border-default: rgba(255, 255, 255, 0.1); /* 可交互：按钮、输入框、浮层 */

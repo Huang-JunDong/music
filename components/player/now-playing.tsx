@@ -14,6 +14,7 @@ import { coverUrl, sourceMeta, switchSourceUrl, fmtSizeClient } from "@/lib/clie
 import { fmtTimeClient } from "@/lib/client/ui";
 import { apiInspect } from "@/lib/client/api";
 import { RateMenu } from "./rate-menu";
+import { Spectrum } from "./spectrum";
 import type { ClientLyricLine, ClientLyricWord } from "@/lib/lrc-client";
 
 /* ---------- 唱机动画常量（模块级引用稳定） ----------
@@ -412,14 +413,15 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
             : "grid-rows-[0px_minmax(0,1fr)_auto]"
         }`}
       >
-        {/* 左上：模式 + 唱片 + 标题（桌面贴靠控制区，移动端垂直居中防溢出）；内层 motion 做切换过渡 */}
+        {/* 左上：模式 + 唱片 + 标题（桌面贴靠控制区，移动端垂直居中防溢出）；首次挂载淡入。
+            注意不能用 key={mobileView}：歌词↔唱片切换会使唱片 AnimatePresence 整树重挂、
+            重播「换碟弹落」动画（返回唱片瞬间唱片 opacity:0 呈黑块） */}
         <div
           className={`row-start-1 w-full self-center lg:col-start-1 lg:row-start-1 lg:self-end lg:pb-1 ${
             mobileView === "disc" ? "flex" : "hidden lg:flex"
           }`}
         >
           <motion.div
-            key={mobileView}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.28, ease: "easeOut" }}
@@ -441,7 +443,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
               }}
             />
             {/* 唱机底座（platter）：比唱片大一圈的深色托盘 + 厚重投影（合成层隔离重绘） */}
-            <div className="absolute -inset-[6%] rounded-full bg-[#10101a] shadow-[0_26px_60px_-14px_rgba(0,0,0,0.85),inset_0_0_0_1px_rgba(255,255,255,0.05),inset_0_2px_6px_rgba(255,255,255,0.03)] [transform:translateZ(0)]" />
+            <div className="absolute -inset-[6%] rounded-full bg-surface-platter shadow-[0_26px_60px_-14px_rgba(0,0,0,0.85),inset_0_0_0_1px_rgba(255,255,255,0.05),inset_0_2px_6px_rgba(255,255,255,0.03)] [transform:translateZ(0)]" />
             {/* 唱片（可换件）：切歌时旧片缩小滑出 → 新片从上方弹落（物理换碟）；内层 disc-spin 持续旋转 */}
             <AnimatePresence mode="wait">
               <motion.div
@@ -473,7 +475,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
                     </div>
                   )}
                   {/* 中心主轴孔：轴台 + 铭牌环 + 轴心 */}
-                  <span className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-[#0b0b12] shadow-[0_0_0_3px_rgba(0,0,0,0.4),0_0_0_4px_rgba(255,255,255,0.05)]">
+                  <span className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-surface-sticky shadow-[0_0_0_3px_rgba(0,0,0,0.4),0_0_0_4px_rgba(255,255,255,0.05)]">
                     <span className="h-1.5 w-1.5 rounded-full bg-zinc-300/70" aria-hidden="true" />
                   </span>
                 </div>
@@ -561,6 +563,8 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
 
         {/* 进度 + 控制（移动端末行贴底；桌面左列下部） */}
         <div className="row-start-3 flex w-full flex-col gap-3 self-end lg:col-start-1 lg:row-start-2">
+            {/* 实时频谱：Web Audio FFT + Canvas，颜色随封面主色；装饰性（aria-hidden） */}
+            <Spectrum tone={coverTone} playing={playing} />
             <ProgressAndTime />
             <div className="flex items-center justify-center gap-3">
               <button onClick={() => prev()} aria-label="上一首" className="flex h-12 w-12 items-center justify-center rounded-full text-zinc-300 transition-all hover:text-white active:scale-90">
@@ -611,29 +615,33 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
             </div>
           </div>
 
-        {/* 歌词：移动端歌词视图占满中段（内部滚动无滚动条、文字居中）；桌面右列通栏左对齐 */}
+        {/* 歌词：移动端歌词视图占满中段（内部滚动无滚动条、文字居中）；桌面右列通栏左对齐。
+            结构要点：返回条必须放在 lyric-mask 容器之外 —— mask 顶部 0–14% 是渐隐透明带，
+            若 sticky 条留在滚动容器内会被 mask 逐段裁切，呈现残缺的黑色横带 */}
         <div
-          className={`lyric-mask no-scrollbar row-start-2 min-h-0 w-full overflow-y-auto px-1 py-3 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:max-w-[520px] lg:py-16 ${
-            mobileView === "lyrics" ? "block" : "hidden lg:block"
-          }`}
+          className={`relative row-start-2 min-h-0 w-full ${mobileView === "lyrics" ? "block" : "hidden lg:block"} lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:max-w-[520px]`}
         >
-          <motion.div
-            key={mobileView}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.3 }}
-          >
-          {/* 移动端歌词视图：返回唱片（sticky 固定顶部，任意滚动位置可点；色值与播放页背景 #09090b 一致） */}
-          <div className="sticky top-0 z-10 -mx-1 flex justify-center bg-gradient-to-b from-[#09090b] via-[#09090b]/92 to-transparent px-1 pb-4 pt-1 lg:hidden">
+          {/* 移动端歌词视图：返回唱片（悬浮于滚动区上方，任意滚动位置可点）。
+              胶囊底色取封面主色衍生的 toneA/toneB 渐变（与背景光晕同源，无主色回退品牌色），
+              半透明 + 毛玻璃与光晕融合，避免黑色异物感；文字 zinc-50 对半透明底 ≥4.5:1 */}
+          <div className="absolute inset-x-0 top-0 z-10 flex justify-center px-1 pt-1 lg:hidden">
             <button
               onClick={() => setMobileView("disc")}
-              className="flex h-11 items-center gap-1.5 rounded-full bg-white/[0.08] px-4 text-[12.5px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.14] active:scale-95"
+              style={{ backgroundImage: `linear-gradient(90deg, ${toneA}, ${toneB})` }}
+              className="flex h-11 items-center gap-1.5 rounded-full border border-white/15 px-4 text-[12.5px] font-medium text-zinc-50 shadow-lg shadow-black/25 backdrop-blur-md transition-[filter,transform] duration-200 hover:brightness-125 active:scale-95"
               aria-label="返回唱片视图"
             >
               <ChevronDown className="h-4 w-4" aria-hidden="true" />
               返回唱片
             </button>
           </div>
+          <div className="lyric-mask no-scrollbar h-full overflow-y-auto px-1 pb-3 pt-14 lg:py-16">
+          <motion.div
+            key={mobileView}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3 }}
+          >
           {!lyricReady ? (
             /* 展开动画期间：轻量骨架（歌词树延迟挂载，避免 mount 阻塞展开动画） */
             <div className="flex flex-col gap-[22px] px-2 py-6 opacity-60" aria-hidden="true">
@@ -665,15 +673,19 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
             </div>
           )}
           </motion.div>
+          </div>
         </div>
       </div>
     </motion.div>
   );
 }
 
-/** 进度行（时间 + 拖动条）：独立订阅 currentTime（4Hz 仅重渲染本小组件，不波及唱片区动画） */
+/** 进度行（时间 + 拖动条）：独立订阅 currentTime（4Hz 仅重渲染本小组件，不波及唱片区动画）。
+ * useShallow 精确订阅三个字段：store 其他切片（队列/歌词等）变化不触发本组件重渲染 */
 function ProgressAndTime() {
-  const { currentTime, duration, seek } = usePlayer();
+  const { currentTime, duration, seek } = usePlayer(
+    useShallow((s) => ({ currentTime: s.currentTime, duration: s.duration, seek: s.seek })),
+  );
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   return (
     <div className="flex items-center gap-3">

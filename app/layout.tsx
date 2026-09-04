@@ -4,9 +4,9 @@ import { AppShell } from "@/components/shell/app-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Music DL — 全网音乐聚合",
+  title: "Music — 全网音乐聚合",
   description: "多源聚合音乐搜索、试听与下载",
-  applicationName: "Music DL",
+  applicationName: "Music",
 };
 
 export const viewport: Viewport = {

@@ -11,6 +11,7 @@
  */
 import crypto from "node:crypto";
 import { getDB } from "./store";
+import { disableAuth } from "./env";
 
 export const SESSION_COOKIE = "music_dl_session";
 const SESSION_TTL_SECONDS = 7 * 24 * 3600;
@@ -27,6 +28,10 @@ interface AuthState {
   record: AuthRecord | null;
   setupToken: string | null;
   setupTokenUsed: boolean;
+  /** 密码重置令牌（一次性，15 分钟有效，对齐 setup token 的 stdout 分发模式） */
+  resetToken: string | null;
+  resetTokenAt: number;
+  resetTokenUsed: boolean;
   failures: Map<string, { count: number; lockedUntil: number }>;
 }
 
@@ -38,6 +43,9 @@ function authState(): AuthState {
       record: null,
       setupToken: null,
       setupTokenUsed: false,
+      resetToken: null,
+      resetTokenAt: 0,
+      resetTokenUsed: true,
       failures: new Map(),
     };
   }
@@ -45,7 +53,7 @@ function authState(): AuthState {
 }
 
 export function authDisabled(): boolean {
-  return (process.env.MUSIC_DL_DISABLE_AUTH ?? "").trim() === "1";
+  return disableAuth();
 }
 
 /* ---------------- 密码（scrypt） ---------------- */
@@ -128,6 +136,90 @@ function consumeSetupToken(token: string): boolean {
   return true;
 }
 
+/* ---------------- 密码重置（忘记密码） ---------------- */
+
+const RESET_TOKEN_TTL_MS = 15 * 60_000;
+
+/**
+ * 申请密码重置令牌：已初始化管理员时生成 24 字节令牌并打印 stdout
+ * （对齐 setup token 的带外分发模式——令牌不回传客户端，运维从服务端日志取得）。
+ * 重复申请作废旧令牌；走防爆破计数。
+ */
+export function requestPasswordReset(username: string, ip: string): { ok: boolean; error?: string } {
+  const record = loadRecord();
+  if (!record) return { ok: false, error: "请先初始化管理员账号" };
+  const key = attemptKey(username ?? "", ip);
+  const locked = lockRemaining(key);
+  if (locked > 0) {
+    return { ok: false, error: `尝试过于频繁，请 ${locked} 秒后重试` };
+  }
+  if (record.username.toLowerCase() !== (username ?? "").trim().toLowerCase()) {
+    recordFailure(key);
+    return { ok: false, error: "用户名不存在或令牌申请失败" };
+  }
+  const state = authState();
+  state.resetToken = crypto.randomBytes(24).toString("base64url");
+  state.resetTokenAt = Date.now();
+  state.resetTokenUsed = false;
+  // eslint-disable-next-line no-console
+  console.log(`Web password reset token (${record.username}): ${state.resetToken}`);
+  clearFailures(key);
+  return { ok: true };
+}
+
+/** 使用重置令牌设置新密码：一次性 + 15 分钟有效；成功后轮换会话密钥（旧会话全部失效） */
+export function resetPassword(
+  username: string,
+  token: string,
+  newPassword: string,
+): { ok: boolean; error?: string } {
+  const record = loadRecord();
+  if (!record) return { ok: false, error: "请先初始化管理员账号" };
+  if (record.username.toLowerCase() !== (username ?? "").trim().toLowerCase()) {
+    return { ok: false, error: "用户名不存在或令牌无效" };
+  }
+  const state = authState();
+  if (!state.resetToken || state.resetTokenUsed) return { ok: false, error: "重置令牌无效或已使用" };
+  if (Date.now() - state.resetTokenAt > RESET_TOKEN_TTL_MS) {
+    state.resetTokenUsed = true;
+    return { ok: false, error: "重置令牌已过期，请重新申请" };
+  }
+  const a = Buffer.from(token ?? "");
+  const b = Buffer.from(state.resetToken);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { ok: false, error: "重置令牌无效或已使用" };
+  }
+  if ((newPassword ?? "").length < 6) return { ok: false, error: "密码至少 6 位" };
+  state.resetTokenUsed = true;
+  saveRecord({
+    username: record.username,
+    passwordHash: hashPassword(newPassword),
+    // 会话密钥轮换：重置密码后所有旧会话 Cookie 立即失效
+    sessionSecret: crypto.randomBytes(32).toString("base64"),
+  });
+  return { ok: true };
+}
+
+/** 已登录修改密码：验证旧密码后更新（会话密钥轮换，调用方应同时下发新会话 Cookie） */
+export function changePassword(
+  oldPassword: string,
+  newPassword: string,
+): { ok: boolean; error?: string; cookie?: string } {
+  const record = loadRecord();
+  if (!record) return { ok: false, error: "请先初始化管理员账号" };
+  if (!verifyPassword(oldPassword ?? "", record.passwordHash)) {
+    return { ok: false, error: "旧密码不正确" };
+  }
+  if ((newPassword ?? "").length < 6) return { ok: false, error: "新密码至少 6 位" };
+  saveRecord({
+    username: record.username,
+    passwordHash: hashPassword(newPassword),
+    sessionSecret: crypto.randomBytes(32).toString("base64"),
+  });
+  const cookie = issueSessionCookie(record.username);
+  return { ok: true, cookie };
+}
+
 /* ---------------- 会话 ---------------- */
 
 function b64url(input: Buffer | string): string {
@@ -173,7 +265,9 @@ function verifySessionCookie(cookie: string | null | undefined): string | null {
     if (!decoded.u || typeof decoded.iat !== "number" || typeof decoded.n !== "number") return null;
     const now = Math.floor(Date.now() / 1000);
     if (now - decoded.iat > SESSION_TTL_SECONDS) return null;
-    if (Math.abs(now - decoded.iat) < -CLOCK_SKEW_SECONDS) return null; // 未来时间容忍 2 分钟
+    // 审核整改 A-23：原 Math.abs(...) < -CLOCK_SKEW_SECONDS 恒假（死代码）——
+    // 正确语义为签发时间超前不超过 2 分钟可容忍，超前更多则拒绝（防伪造未来 iat 拉长会话）
+    if (decoded.iat - now > CLOCK_SKEW_SECONDS) return null;
     if (decoded.u !== record.username) return null;
     return decoded.u;
   } catch {

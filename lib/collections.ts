@@ -4,6 +4,7 @@
 import { getDB } from "./store";
 import { GetOriginalLink } from "./original-link";
 import { getProvider } from "./registry";
+import { likeEscape } from "./web-core";
 import type { Playlist, Song } from "./types";
 
 export interface CollectionRow {
@@ -353,10 +354,11 @@ export function savedSongRow(collectionId: number, song: SaveSongInput): SavedSo
 export function localCollectionSearchPlaylists(keyword: string): Playlist[] {
   keyword = (keyword ?? "").trim();
   if (!keyword) return [];
-  const like = `%${keyword}%`;
+  // 审核整改 A-25：LIKE 元字符转义（防 %/_ 全表扫描）
+  const like = `%${likeEscape(keyword)}%`;
   const rows = getDB()
     .prepare(
-      "SELECT * FROM collections WHERE name LIKE ? OR description LIKE ? OR creator LIKE ? ORDER BY id DESC",
+      "SELECT * FROM collections WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR creator LIKE ? ESCAPE '\\' ORDER BY id DESC",
     )
     .all(like, like, like) as CollectionRow[];
   return rows.map(collectionCard);

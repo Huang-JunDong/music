@@ -2,12 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDB } from "@/lib/store";
 import { isImported, loadCollection } from "@/lib/collections";
 import { LOCAL_MUSIC_SOURCE, localMusicTrackByID } from "@/lib/local-music";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** 审核整改 A-17：批量本地音乐上限 */
+const MAX_BATCH_IDS = 1000;
+
 /** POST /api/collections/[id]/local_music/batch {ids:[...]} → {requested,added,duplicate,failed}（单事务批量插入） */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const collection = loadCollection(id);
   if (!collection) {
@@ -28,6 +35,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!Array.isArray(body?.ids) || body.ids.length === 0) {
     return NextResponse.json({ error: "缺少本地音乐 ID 列表" }, { status: 400 });
+  }
+  if (body.ids.length > MAX_BATCH_IDS) {
+    return NextResponse.json({ error: `批量数量过多（上限 ${MAX_BATCH_IDS}）` }, { status: 413 });
   }
 
   // 收集有效曲目（对齐 Go：track 缺失 → failed++）

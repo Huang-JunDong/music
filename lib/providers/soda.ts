@@ -17,6 +17,7 @@ import type {
 import { httpGetJSON, httpGetText, httpRequest, httpPostRawBodyText, responseCookies } from "../http";
 import { getCookie } from "../cookies";
 import { decryptAudio } from "../soda-crypto";
+import { sodaQrCaptureFile, sodaQrUseCaptureParams, sodaQrUseCaptureSignature } from "../env";
 
 // ---------- 常量（对齐 soda.go / search.go / login.go） ----------
 
@@ -1900,7 +1901,7 @@ let capturedHeaders: Record<string, Record<string, string>> | null = null;
 let capturedLoaded = false;
 
 function captureFilePath(): string {
-  const env = trim(process.env.SODA_QR_CAPTURE_FILE);
+  const env = sodaQrCaptureFile();
   if (env) return env;
   let cwd = process.cwd();
   for (let i = 0; i < 5; i++) {
@@ -1914,7 +1915,7 @@ function captureFilePath(): string {
 }
 
 function loadCapturedParams(): void {
-  if (process.env.SODA_QR_USE_CAPTURE_PARAMS !== "1") return;
+  if (!sodaQrUseCaptureParams()) return;
   if (capturedLoaded) return;
   capturedLoaded = true;
   capturedQueries = {};
@@ -1974,7 +1975,7 @@ function applyCapturedQueryParams(params: Record<string, string>, apiPath: strin
     const value = trim(captured[key]);
     if (value) params[key] = value;
   }
-  if (process.env.SODA_QR_USE_CAPTURE_SIGNATURE === "1") {
+  if (sodaQrUseCaptureSignature()) {
     for (const key of ["msToken", "a_bogus"]) {
       const value = trim(captured[key]);
       if (value) params[key] = value;

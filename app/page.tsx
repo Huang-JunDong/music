@@ -84,6 +84,10 @@ function SearchPageInner() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SearchResponse | null>(null);
   const [searched, setSearched] = useState(Boolean(params.get("q")));
+  /** 网络/异常类搜索错误（业务错误走 result.error）；与 result 互斥展示（审核整改 A-20） */
+  const [searchError, setSearchError] = useState<string | null>(null);
+  /** 搜索请求序号：连续搜索/切类型时最后写入胜出，过期响应丢弃（审核整改 A-20 竞态防护） */
+  const searchSeqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const resultRef = useRef<HTMLDivElement | null>(null);
 
@@ -128,10 +132,13 @@ function SearchPageInner() {
     async (q: string, t: SearchType, srcs: string[]) => {
       const query = q.trim();
       if (!query) return;
+      const seq = ++searchSeqRef.current;
       setLoading(true);
       setSearched(true);
+      setSearchError(null);
       try {
         const resp = await apiSearch({ q: query, type: t, sources: srcs });
+        if (seq !== searchSeqRef.current) return; // 过期响应：已有更新的一次搜索在途/完成
         setResult(resp);
         pushHistory(query);
         const p = new URLSearchParams({ q: query, type: t, sources: srcs.join(",") });
@@ -143,10 +150,13 @@ function SearchPageInner() {
           });
         }
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "搜索失败");
+        if (seq !== searchSeqRef.current) return;
+        // 审核整改 A-20：错误态持久展示（错误卡 + 重试），toast 仅作即时提醒
+        setSearchError(e instanceof Error ? e.message : "搜索失败");
         setResult(null);
+        toast.error(e instanceof Error ? e.message : "搜索失败");
       } finally {
-        setLoading(false);
+        if (seq === searchSeqRef.current) setLoading(false);
       }
     },
     [pushHistory],
@@ -281,7 +291,7 @@ function SearchPageInner() {
       </form>
 
       {/* ---------- 类型 tab + 源选择 ---------- */}
-      <div className="sticky top-[61px] z-20 -mx-4 mt-4 bg-gradient-to-b from-[#0b0b12] via-[#0b0b12]/92 to-transparent px-4 pb-2 pt-2 backdrop-blur-sm lg:top-0 lg:-mx-8 lg:px-8">
+      <div className="sticky top-[61px] z-20 -mx-4 mt-4 bg-gradient-to-b from-surface-sticky via-surface-sticky/92 to-transparent px-4 pb-2 pt-2 backdrop-blur-sm lg:top-0 lg:-mx-8 lg:px-8">
         <div className="flex flex-wrap items-center gap-2">
           <div className="glass flex rounded-xl border border-white/[0.07] p-1" role="tablist" aria-label="搜索类型">
             {TYPE_TABS.map((t) => {
@@ -391,22 +401,14 @@ function SearchPageInner() {
             )}
             {/* 错误 */}
             {result.error && (
-              <div className="flex flex-col items-center gap-2.5 py-16 text-center">
-                <span className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
-                  <Search className="h-6 w-6 text-red-300/80" aria-hidden="true" />
-                </span>
-                <p className="max-w-sm text-sm leading-relaxed text-red-300/90">{result.error}</p>
-                <p className="text-xs text-zinc-500">可尝试直接搜索关键词，或切换其他源</p>
-                <button
-                  onClick={() => void doSearch(input, type, sources)}
-                  className="mt-1 flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
-                >
-                  <RefreshCw className="h-4 w-4" aria-hidden="true" /> 重新搜索
-                </button>
-              </div>
+              <SearchErrorCard
+                message={result.error}
+                hint="可尝试直接搜索关键词，或切换其他源"
+                onRetry={() => void doSearch(input, type, sources)}
+              />
             )}
-            {/* 单曲结果 */}
-            {result.type === "song" && result.songs && !result.error && (
+            {/* 单曲结果（审核整改 A-28：songs 结构校验，异常响应体防白屏） */}
+            {result.type === "song" && Array.isArray(result.songs) && result.songs.length > 0 && !result.error && (
               <>
                 <SectionTitle count={result.songs.length}>单曲结果</SectionTitle>
                 <SongList
@@ -415,6 +417,15 @@ function SearchPageInner() {
                   onSongsChange={(next) =>
                     setResult((prev) => (prev && prev.songs ? { ...prev, songs: next } : prev))
                   }
+                />
+              </>
+            )}
+            {result.type === "song" && !result.error && (!Array.isArray(result.songs) || result.songs.length === 0) && (
+              <>
+                <SectionTitle count={0}>单曲结果</SectionTitle>
+                <SongList
+                  songs={[]}
+                  emptyHint="没有找到相关歌曲，换个关键词或启用更多音源试试"
                 />
               </>
             )}
@@ -440,6 +451,13 @@ function SearchPageInner() {
               </>
             )}
           </>
+        ) : searchError ? (
+          /* 审核整改 A-20：搜索异常（网络/超时等）持久错误态 + 重试入口，不再静默落空白 */
+          <SearchErrorCard
+            message={searchError}
+            hint="请检查网络连接或稍后重试"
+            onRetry={() => void doSearch(input, type, sources)}
+          />
         ) : (
           !searched && (
             <>
@@ -489,6 +507,25 @@ function SectionTitle({ children, count }: { children: React.ReactNode; count?: 
     <div className="mb-3 mt-2 flex items-baseline gap-2">
       <h2 className="text-[15px] font-bold text-zinc-100">{children}</h2>
       {typeof count === "number" && <span className="text-xs tabular-nums text-zinc-500">{count} 项</span>}
+    </div>
+  );
+}
+
+/** 搜索错误卡（审核整改 A-20）：业务错误（result.error）与网络异常（searchError）共用 */
+function SearchErrorCard({ message, hint, onRetry }: { message: string; hint: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-2.5 py-16 text-center" role="alert">
+      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
+        <Search className="h-6 w-6 text-red-300/80" aria-hidden="true" />
+      </span>
+      <p className="max-w-sm text-sm leading-relaxed text-red-300/90">{message}</p>
+      <p className="text-xs text-zinc-500">{hint}</p>
+      <button
+        onClick={onRetry}
+        className="mt-1 flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
+      >
+        <RefreshCw className="h-4 w-4" aria-hidden="true" /> 重新搜索
+      </button>
     </div>
   );
 }

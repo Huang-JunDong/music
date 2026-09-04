@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDB, downloadDir } from "@/lib/store";
 import { collectionSongsJSON, insertSavedSong, isImported, loadCollection } from "@/lib/collections";
 import { isLocalMusicSource, decodeLocalMusicID } from "@/lib/local-music";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,6 +40,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 /** POST /api/collections/[id]/songs {id, source, name, artist, cover, duration, extra} — 添加单曲 */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const collection = loadCollection(id);
   if (!collection) {
@@ -92,6 +96,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
 /** DELETE /api/collections/[id]/songs — body {songs:[{id,source}]} 批量 或 query id+source 单条 */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const collection = loadCollection(id);
   if (!collection) {

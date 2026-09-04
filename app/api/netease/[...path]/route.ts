@@ -13,6 +13,7 @@ import { ncmGlobals } from "@/lib/netease/global-state";
 import { mergeStoredCookie } from "@/lib/netease";
 import { getCookie } from "@/lib/cookies";
 import { requireAuth } from "@/lib/auth";
+import { enableGeneralUnblock, enableProxy, proxyUrl } from "@/lib/env";
 import { md5hex } from "@/lib/crypto";
 import { logger } from "@/lib/netease/logger";
 import { matchID } from "@/lib/netease/unblock";
@@ -37,6 +38,9 @@ function cacheGet(key: string) {
     apiCache.delete(key);
     return null;
   }
+  // 审核整改 A-27：命中重插实现 LRU 淘汰（原插入序 FIFO 命中率次优）
+  apiCache.delete(key);
+  apiCache.set(key, hit);
   return hit;
 }
 
@@ -54,6 +58,16 @@ function hasLoginCookie(cookies: unknown): boolean {
 
 interface ParsedBody {
   fields: Record<string, any>;
+}
+
+/** 审核整改 A-10：multipart 单文件大小上限 */
+const MAX_UPLOAD_FILE_BYTES = 100 * 1024 * 1024;
+
+class UploadTooLargeError extends Error {
+  constructor(field: string) {
+    super(`file too large: ${field} (max 100MB)`);
+    this.name = "UploadTooLargeError";
+  }
 }
 
 async function parseBody(req: NextRequest): Promise<ParsedBody> {
@@ -76,6 +90,10 @@ async function parseBody(req: NextRequest): Promise<ParsedBody> {
           fields[key] = value;
         } else {
           // File → { name, data:Buffer, mimetype, size }（对齐 express-fileupload req.files）
+          // 审核整改 A-10：单文件大小上限（超限 413 而非整读进内存；云盘歌曲上传最大几十 MB）
+          if (value.size > MAX_UPLOAD_FILE_BYTES) {
+            throw new UploadTooLargeError(key);
+          }
           const buf = Buffer.from(await value.arrayBuffer());
           fields[key] = {
             name: value.name || "file",
@@ -86,7 +104,9 @@ async function parseBody(req: NextRequest): Promise<ParsedBody> {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    // 审核整改 A-10：大小超限必须冒泡为 413，其余解析失败按空 body 处理
+    if (err instanceof UploadTooLargeError) throw err;
     /* body 解析失败按空处理 */
   }
   return { fields };
@@ -135,7 +155,15 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
   });
 
   // body（JSON / form / 文件）
-  const { fields } = await parseBody(req);
+  let fields: Record<string, any>;
+  try {
+    ({ fields } = await parseBody(req));
+  } catch (err) {
+    if (err instanceof UploadTooLargeError) {
+      return NextResponse.json({ code: 413, msg: err.message }, { status: 413 });
+    }
+    throw err;
+  }
   Object.assign(query, fields);
 
   // cookie：显式 cookie 参数 > SQLite 存储 > 请求头
@@ -183,7 +211,7 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
     logger.info(`Request Success: [${entry.name}] ${routePath}`);
 
     // 夹带私货部分（对齐源 server.js）：开启通用解锁且是获取歌曲 URL 的接口时尝试解锁
-    if (routePath === "/song/url/v1" && process.env.ENABLE_GENERAL_UNBLOCK === "true") {
+    if (routePath === "/song/url/v1" && enableGeneralUnblock()) {
       const song = moduleResponse.body?.data?.[0];
       if (
         song &&
@@ -196,9 +224,8 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
         logger.info("Unblock success! url:", song.url);
       }
       if (song?.url && song.url.includes("kuwo")) {
-        const proxy = process.env.PROXY_URL;
-        const useProxy = process.env.ENABLE_PROXY || "false";
-        if (useProxy === "true" && proxy) {
+        const proxy = proxyUrl();
+        if (enableProxy() && proxy) {
           song.proxyUrl = proxy + song.url;
         }
       }
@@ -241,7 +268,8 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
         : { summary: String(b).slice(0, 200) };
     logger.error(`Request Failed: [${routePath}]`, { status: err.status, ...brief });
     if (!err.body) {
-      return NextResponse.json({ code: 404, data: null, msg: "Not Found" }, { status: 404 });
+      // 审核整改 A-24：上游模块异常且无响应体属上游故障，502 而非 404
+      return NextResponse.json({ code: 502, data: null, msg: "Upstream Error" }, { status: 502 });
     }
     if ((err.body as any).code == "301" || (err.body as any).code === 301) {
       (err.body as any).msg = "需要登录";

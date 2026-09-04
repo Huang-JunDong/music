@@ -1,4 +1,4 @@
-# Music DL — 全网音乐聚合搜索 / 试听 / 下载
+# Music — 全网音乐聚合搜索 / 试听 / 下载
 
 基于 **Next.js 15 全栈**（App Router + Route Handlers + TypeScript）实现的音乐聚合应用。
 后端接口从 [go-music-dl](https://github.com/guohuiyuan/go-music-dl)（及其音源库 [music-lib](https://github.com/guohuiyuan/music-lib)）**完整迁移为 TypeScript，45 条 API 与 Go 版一一对应**，支持 13 家音源、歌单/专辑/链接解析、扫码登录、管理员鉴权、本地音乐库。

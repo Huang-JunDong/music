@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addFrames, getSession } from "@/lib/videogen";
+import { addFrames, getSession, VideogenFrameLimitError } from "@/lib/videogen";
+import { requireAuth } from "@/lib/auth";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 审核整改 A-10：单帧大小与单批数量上限（防未授权资源耗尽；总量上限见 lib/videogen.ts） */
+const MAX_FRAME_BYTES = 5 * 1024 * 1024;
+const MAX_FRAMES_PER_BATCH = 120;
 
 function decodeBase64Frame(dataURI: string): Buffer {
   let text = dataURI ?? "";
@@ -17,6 +23,11 @@ function decodeBase64Frame(dataURI: string): Buffer {
  * 或 JSON {session_id, frames:[base64], start_idx}）→ {status, received}
  */
 export async function POST(req: NextRequest) {
+  const denied = requireAuth(req);
+  if (denied) return NextResponse.json(denied.body, { status: denied.status });
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const contentType = req.headers.get("content-type") ?? "";
   let sessionId = "";
   let startIdx = -1;
@@ -53,6 +64,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // 审核整改 A-10：批次数量与单帧大小上限
+  if (frames.length > MAX_FRAMES_PER_BATCH) {
+    return NextResponse.json({ error: `too many frames in one batch (max ${MAX_FRAMES_PER_BATCH})` }, { status: 413 });
+  }
+  if (frames.some((f) => f.byteLength > MAX_FRAME_BYTES)) {
+    return NextResponse.json({ error: "frame too large (max 5MB)" }, { status: 413 });
+  }
+
   const session = getSession(sessionId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -60,6 +79,10 @@ export async function POST(req: NextRequest) {
 
   const err = addFrames(session, frames, startIdx);
   if (err) {
+    // 审核整改 A-06：帧总量超限返回 413（资源上限），乱序仍为 500（协议错误）
+    if (err instanceof VideogenFrameLimitError) {
+      return NextResponse.json({ error: err.message }, { status: 413 });
+    }
     return NextResponse.json(
       { error: `Failed to write frame stream: ${err.message}` },
       { status: 500 },

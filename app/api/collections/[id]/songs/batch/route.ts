@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDB } from "@/lib/store";
 import { insertSavedSong, isImported, loadCollection } from "@/lib/collections";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 审核整改 A-17：批量收藏上限（大歌单整单收藏一次到位） */
+const MAX_BATCH_SONGS = 1000;
 
 interface BatchSong {
   id?: string;
@@ -17,6 +21,9 @@ interface BatchSong {
 
 /** POST /api/collections/[id]/songs/batch {songs:[...]} → {requested,added,duplicate,failed} */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const collection = loadCollection(id);
   if (!collection) {
@@ -37,6 +44,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!Array.isArray(body?.songs) || body.songs.length === 0) {
     return NextResponse.json({ error: "缺少要收藏的歌曲列表" }, { status: 400 });
+  }
+  if (body.songs.length > MAX_BATCH_SONGS) {
+    return NextResponse.json({ error: `批量收藏数量过多（上限 ${MAX_BATCH_SONGS}）` }, { status: 413 });
   }
 
   let added = 0;

@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDB } from "@/lib/store";
 import { isImported, loadCollection } from "@/lib/collections";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** PUT /api/collections/[id] {name, description, cover} — 仅 manual 可编辑 */
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   const { id } = await params;
   const existing = loadCollection(id);
   if (!existing) {

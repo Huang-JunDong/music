@@ -6,6 +6,7 @@ import {
   COLLECTION_CONTENT_PLAYLIST,
   COLLECTION_KIND_IMPORTED,
 } from "@/lib/collections";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,9 @@ interface ImportRequest {
 
 /** POST /api/collections/import（content_type=playlist|album，source≠local，external_id 必填；查重 duplicate:true） */
 export async function POST(req: NextRequest) {
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
+
   let body: ImportRequest;
   try {
     body = (await req.json()) as ImportRequest;

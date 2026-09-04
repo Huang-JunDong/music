@@ -79,7 +79,7 @@ export function PlayerBar() {
         transition={{ type: "spring", stiffness: 380, damping: 34 }}
         onClick={() => setExpanded(true)}
         aria-label="展开播放页"
-        className="glass fixed inset-x-2 bottom-[70px] z-40 flex h-[58px] items-center gap-3 rounded-2xl border border-white/[0.1] px-3 shadow-2xl shadow-black/50 lg:hidden"
+        className="glass fixed inset-x-2 bottom-3 z-40 flex h-[58px] items-center gap-3 rounded-2xl border border-white/[0.1] px-3 shadow-2xl shadow-black/50 lg:hidden"
       >
         <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-zinc-800">
           {song.cover && (

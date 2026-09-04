@@ -4,6 +4,7 @@ import { defaultSourcesForSearchType, sourcesFromQuery } from "@/lib/web-core";
 import { filterSongsByExactArtist } from "@/lib/song-meta";
 import { localMusicSearchSongs, isLocalMusicSource } from "@/lib/local-music";
 import { localCollectionSearchPlaylists } from "@/lib/collections";
+import { breakerAllows, breakerRecordFailure, breakerRecordSuccess } from "@/lib/breaker";
 import {
   applyImportCollectionFallback,
   importCollectionFromQuery,
@@ -13,6 +14,13 @@ import type { Playlist, Song } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * 审核整改 A-16/A-27：聚合结果上限（每源 top-N + 总量上限，防数 MB 响应）；
+ * 链接解析分支不截断（歌单导入依赖完整曲目列表）。
+ */
+const SEARCH_MAX_PER_SOURCE = 30;
+const SEARCH_MAX_TOTAL = 400;
 
 /**
  * GET /api/search?q=&type=song|playlist|album&exact_artist=&sources=(多值/逗号分隔)
@@ -119,7 +127,20 @@ export async function GET(req: NextRequest) {
         onlineSources.map(async (source) => {
           const provider = getProvider(source);
           if (!provider) return [] as Song[];
-          return (await provider.search(keyword)).map((s) => ({ ...s, source }));
+          // 审核整改 A-27：连续失败源短期熔断跳过（30s 窗口，见 lib/breaker.ts）
+          if (!breakerAllows(`search:${source}`)) {
+            errors[source] = "该源近期失败频繁，已临时跳过";
+            return [] as Song[];
+          }
+          try {
+            const songs = (await provider.search(keyword)).map((s) => ({ ...s, source }));
+            breakerRecordSuccess(`search:${source}`);
+            // 审核整改 A-16：每源 top-N 截断
+            return songs.slice(0, SEARCH_MAX_PER_SOURCE);
+          } catch (err) {
+            breakerRecordFailure(`search:${source}`);
+            throw err;
+          }
         }),
       );
       results.forEach((result, i) => {
@@ -132,12 +153,26 @@ export async function GET(req: NextRequest) {
       const results = await Promise.allSettled(
         onlineSources.map(async (source) => {
           const provider = getProvider(source);
-          if (searchType === "playlist") {
-            if (!provider?.searchPlaylist) return [] as Playlist[];
-            return (await provider.searchPlaylist(keyword)).map((p) => ({ ...p, source }));
+          if (!breakerAllows(`search:${source}`)) {
+            errors[source] = "该源近期失败频繁，已临时跳过";
+            return [] as Playlist[];
           }
-          if (!provider?.searchAlbum) return [] as Playlist[];
-          return (await provider.searchAlbum(keyword)).map((p) => ({ ...p, source }));
+          try {
+            const playlists = (
+              searchType === "playlist"
+                ? provider?.searchPlaylist
+                  ? await provider.searchPlaylist(keyword)
+                  : []
+                : provider?.searchAlbum
+                  ? await provider.searchAlbum(keyword)
+                  : []
+            ).map((p) => ({ ...p, source }));
+            breakerRecordSuccess(`search:${source}`);
+            return playlists.slice(0, SEARCH_MAX_PER_SOURCE);
+          } catch (err) {
+            breakerRecordFailure(`search:${source}`);
+            throw err;
+          }
         }),
       );
       results.forEach((result, i) => {
@@ -149,6 +184,10 @@ export async function GET(req: NextRequest) {
     }
     songs = allSongs;
     playlists = allPlaylists;
+
+    // 审核整改 A-16：聚合总量上限（超额按序截断）
+    if (songs.length > SEARCH_MAX_TOTAL) songs = songs.slice(0, SEARCH_MAX_TOTAL);
+    if (playlists.length > SEARCH_MAX_TOTAL) playlists = playlists.slice(0, SEARCH_MAX_TOTAL);
 
     if (requested.some((s) => isLocalMusicSource(s))) {
       if (searchType === "song") {

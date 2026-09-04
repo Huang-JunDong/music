@@ -19,13 +19,14 @@ export class ApiError extends Error {
   }
 }
 
-/** 401 → 触发登录跳转（AppShell 监听） */
+/** 401 → 触发登录跳转（AppShell 监听）；登录/初始化/密码流程自身不触发 */
 function handleAuthFailure(flags?: { setupRequired?: boolean; loginRequired?: boolean }) {
   if (typeof window === "undefined") return;
-  if (flags?.setupRequired || flags?.loginRequired || true) {
-    window.dispatchEvent(new CustomEvent("musicdl:auth-required", { detail: flags ?? {} }));
-  }
+  window.dispatchEvent(new CustomEvent("musicdl:auth-required", { detail: flags ?? {} }));
 }
+
+/** 登录流程类端点：401 由表单自身处理，不触发全局分流 */
+const AUTH_FLOW_PREFIXES = ["/api/login", "/api/setup", "/api/logout", "/api/password"];
 
 async function getJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url, { cache: "no-store" });
@@ -39,7 +40,7 @@ async function getJSON<T>(url: string): Promise<T> {
     } catch {
       /* ignore */
     }
-    if (resp.status === 401 && !url.startsWith("/api/login") && !url.startsWith("/api/setup") && !url.startsWith("/api/auth")) {
+    if (resp.status === 401 && !AUTH_FLOW_PREFIXES.some((p) => url.startsWith(p))) {
       handleAuthFailure(flags);
     }
     throw new ApiError(message, resp.status, flags);
@@ -47,20 +48,36 @@ async function getJSON<T>(url: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
-async function postJSON<T>(url: string, body?: unknown, method = "POST"): Promise<T> {
+/**
+ * 统一写请求封装（审核整改 A-28/A-15）：POST/PUT/DELETE 全部经此发出——
+ * 统一携带 X-Requested-With 头（服务端 checkWriteGuard 同源 CSRF 防护要求）、
+ * 统一 r.ok 校验与 401 全局分流（原先六个端点绕过封装导致 401 不分流）。
+ */
+async function requestJSON<T>(url: string, method: string, body?: unknown): Promise<T> {
   const resp = await fetch(url, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    if (resp.status === 401 && !url.startsWith("/api/login") && !url.startsWith("/api/setup")) {
+    if (resp.status === 401 && !AUTH_FLOW_PREFIXES.some((p) => url.startsWith(p))) {
       handleAuthFailure(data);
     }
     throw new ApiError(data?.error ?? `HTTP ${resp.status}`, resp.status, data);
   }
   return data as T;
+}
+
+async function postJSON<T>(url: string, body?: unknown, method = "POST"): Promise<T> {
+  return requestJSON<T>(url, method, body);
+}
+
+async function delJSON<T>(url: string, body?: unknown): Promise<T> {
+  return requestJSON<T>(url, "DELETE", body);
 }
 
 /* ---------------- 鉴权 ---------------- */
@@ -91,6 +108,29 @@ export function apiSetup(body: {
 
 export function apiLogout(): Promise<{ status: string }> {
   return postJSON("/api/logout");
+}
+
+/* ---------------- 密码管理（审核补充：忘记密码 / 重置 / 修改） ---------------- */
+
+export function apiPasswordForgot(username: string): Promise<{ status: string; hint?: string }> {
+  return postJSON("/api/password/forgot", { username });
+}
+
+export function apiPasswordReset(body: {
+  username: string;
+  reset_token: string;
+  new_password: string;
+  confirm_password: string;
+}): Promise<{ status: string }> {
+  return postJSON("/api/password/reset", body);
+}
+
+export function apiPasswordChange(body: {
+  old_password: string;
+  new_password: string;
+  confirm_password?: string;
+}): Promise<{ status: string }> {
+  return postJSON("/api/password/change", body);
 }
 
 /* ---------------- 搜索 ---------------- */
@@ -334,7 +374,7 @@ export function apiUpdateCollection(
 }
 
 export function apiDeleteCollection(id: number): Promise<{ status: string }> {
-  return fetch(`/api/collections/${id}`, { method: "DELETE" }).then((r) => r.json());
+  return delJSON(`/api/collections/${id}`);
 }
 
 export function apiCollectionSongs(
@@ -376,11 +416,7 @@ export function apiBatchAddToCollection(
 }
 
 export function apiRemoveSongFromCollection(id: number, songId: string, source: string): Promise<{ status: string }> {
-  return fetch(`/api/collections/${id}/songs`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ songs: [{ id: songId, source }] }),
-  }).then((r) => r.json());
+  return delJSON(`/api/collections/${id}/songs`, { songs: [{ id: songId, source }] });
 }
 
 /** 批量把本地音乐加入自建歌单（对齐 Go POST /collections/:id/local_music/batch） */
@@ -393,21 +429,15 @@ export function apiAddLocalMusicBatch(
 
 /** 播放时后台缓存到本地（autoCacheOnPlay；XHR + 同源校验由服务端守卫） */
 export function apiAutoCacheOnPlay(song: Song): Promise<{ status: string }> {
-  return fetch("/api/local_music/auto_cache", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-    body: JSON.stringify({
-      id: song.id,
-      source: song.source,
-      name: song.name,
-      artist: song.artist,
-      album: song.album,
-      cover: song.cover,
-      extra: song.extra,
-    }),
-  })
-    .then((r) => r.json())
-    .catch(() => ({ status: "error" }));
+  return postJSON<{ status: string }>("/api/local_music/auto_cache", {
+    id: song.id,
+    source: song.source,
+    name: song.name,
+    artist: song.artist,
+    album: song.album,
+    cover: song.cover,
+    extra: song.extra,
+  }).catch(() => ({ status: "error" }));
 }
 
 /* ---------------- 本地音乐 ---------------- */
@@ -469,7 +499,7 @@ export function apiUploadLocalMusic(file: File): Promise<{ status: string; track
 }
 
 export function apiDeleteLocalMusic(id: string): Promise<{ status: string }> {
-  return fetch(`/api/local_music?id=${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
+  return delJSON(`/api/local_music?id=${encodeURIComponent(id)}`);
 }
 
 export function apiLocalDuplicates(
@@ -490,7 +520,7 @@ export function apiLocalDuplicates(
 }
 
 export function apiReindexLocalMusic(): Promise<{ status: string }> {
-  return fetch("/api/local_music/reindex", { method: "POST" }).then((r) => r.json());
+  return postJSON("/api/local_music/reindex");
 }
 
 /** 批量匹配本地已有（对齐 Go batchMatchLocalMusic：搜索结果页标记"本地已有"并优先本地播放） */
@@ -573,7 +603,7 @@ export function apiDownloadRecords(
 }
 
 export function apiClearDownloadRecords(): Promise<{ status: string }> {
-  return fetch("/api/downloads/records", { method: "DELETE" }).then((r) => r.json());
+  return delJSON("/api/downloads/records");
 }
 
 /* ---------------- 应用更新 ---------------- */

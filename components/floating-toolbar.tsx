@@ -49,7 +49,7 @@ export function FloatingToolbar() {
           exit={reduced ? { opacity: 0 } : { opacity: 0, x: 24 }}
           transition={{ type: "spring", stiffness: 380, damping: 30 }}
           className={`glass fixed right-3 z-30 flex flex-col overflow-hidden rounded-2xl border border-white/[0.1] shadow-2xl shadow-black/40 lg:right-6 ${
-            hasCurrent ? "bottom-[150px] lg:bottom-[120px]" : "bottom-[80px] lg:bottom-8"
+            hasCurrent ? "bottom-[84px] lg:bottom-[120px]" : "bottom-8"
           }`}
           role="toolbar"
           aria-label="快捷滚动"

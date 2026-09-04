@@ -5,6 +5,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import { favoritesDbPath } from "./env";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 export const DEFAULT_DOWNLOAD_DIR = path.join(DATA_DIR, "downloads");
@@ -77,6 +78,8 @@ export function getDB(): Database.Database {
       k TEXT PRIMARY KEY,
       v TEXT NOT NULL
     );
+    /* 审核整改 A-25：local_music_index 排序列索引（ORDER BY modified_at DESC 高频路径） */
+    CREATE INDEX IF NOT EXISTS idx_lmi_modified_at ON local_music_index (modified_at DESC);
     CREATE TABLE IF NOT EXISTS cookies (
       source TEXT PRIMARY KEY,
       cookie TEXT NOT NULL DEFAULT '',
@@ -102,7 +105,7 @@ function removeLegacyFavoritesFiles(legacyPath: string): void {
 
 /** migrateLegacyFavorites 移植：collections 为空且 data/favorites.db 存在时整库导入 */
 function migrateLegacyFavorites(db: Database.Database): void {
-  const legacyPath = (process.env.MUSIC_DL_FAVORITES_DB ?? "").trim() || path.join(DATA_DIR, "favorites.db");
+  const legacyPath = favoritesDbPath() || path.join(DATA_DIR, "favorites.db");
   const unifiedPath = path.join(DATA_DIR, "app.db");
   if (path.resolve(legacyPath) === path.resolve(unifiedPath)) return;
   if (!fs.existsSync(legacyPath)) return;
@@ -139,10 +142,17 @@ function migrateLegacyFavorites(db: Database.Database): void {
 
     const insertTx = db.transaction(() => {
       if (collections.length) {
-        const cols = Object.keys(collections[0]);
-        const placeholders = cols.map(() => "?").join(",");
-        const stmt = db.prepare(`INSERT INTO collections (${cols.join(",")}) VALUES (${placeholders})`);
-        for (const row of collections) stmt.run(...cols.map((c) => row[c]));
+        // 审核整改 A-25：legacy 表头列名白名单过滤后再拼接（防 legacy 文件被替换成注入面）
+        const LEGACY_COLLECTION_COLS = new Set([
+          "id", "name", "description", "cover", "kind", "content_type", "source",
+          "external_id", "link", "creator", "track_count", "created_at",
+        ]);
+        const cols = Object.keys(collections[0]).filter((c) => LEGACY_COLLECTION_COLS.has(c));
+        if (cols.length) {
+          const placeholders = cols.map(() => "?").join(",");
+          const stmt = db.prepare(`INSERT INTO collections (${cols.join(",")}) VALUES (${placeholders})`);
+          for (const row of collections) stmt.run(...cols.map((c) => row[c]));
+        }
       }
       if (savedSongs.length) {
         const stmt = db.prepare(
@@ -292,6 +302,28 @@ export function saveWebSettings(next: Partial<WebSettings>): WebSettings {
 export function publicWebSettings(): WebSettings {
   const s = getWebSettings();
   return { ...s, webdavPassword: "" };
+}
+
+/**
+ * 未登录可读的播放器相关子集（审核整改 A-12 软鉴权配套）：
+ * 仅暴露免登录听歌链路必需的行为开关，剔除 webdavUrl/Username、downloadDir、
+ * githubProxyUrl、updateRepoUrl 等服务器内部配置（防侦察面）。
+ */
+export function publicPlayerSettings(): Partial<WebSettings> {
+  const s = getWebSettings();
+  return {
+    embedDownload: s.embedDownload,
+    disableFloatingLyrics: s.disableFloatingLyrics,
+    webPageSize: s.webPageSize,
+    cliPageSize: s.cliPageSize,
+    downloadConcurrency: s.downloadConcurrency,
+    autoSwitchInvalidSources: s.autoSwitchInvalidSources,
+    autoCacheOnPlay: s.autoCacheOnPlay,
+    vgChangeCover: s.vgChangeCover,
+    vgChangeAudio: s.vgChangeAudio,
+    vgChangeLyric: s.vgChangeLyric,
+    vgExportVideo: s.vgExportVideo,
+  };
 }
 
 /** 下载目录（带兜底） */

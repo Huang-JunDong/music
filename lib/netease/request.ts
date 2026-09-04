@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import * as encrypt from "./crypto";
 import { APP_CONF } from "./config";
 import { logger } from "./logger";
+import { proxyInsecure } from "../env";
 import {
   cookieToJson,
   cookieObjToString,
@@ -142,7 +143,9 @@ async function getProxyDispatcher(proxyUrl: string): Promise<unknown> {
       agent = new ProxyAgent({
         uri: `${purl.protocol}//${purl.host}`,
         token,
-        requestTls: purl.protocol === "https:" ? { rejectUnauthorized: false } : undefined,
+        // 审核整改 A-05：默认严格校验目标证书；仅 MUSIC_DL_PROXY_INSECURE=1（书面风险接受的
+        // 代码化，供自签证书代理场景显式降级）时关闭，默认生产环境保持安全。
+        requestTls: purl.protocol === "https:" ? { rejectUnauthorized: !proxyInsecure() } : undefined,
       });
     } else {
       logger.error("[proxy] 代理配置无效,不使用代理");

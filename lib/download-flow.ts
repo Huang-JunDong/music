@@ -14,6 +14,8 @@ import { fetchBytesWithMime as fetchBytesWithMimeParallel } from "./range-fetch"
 import { sanitizeFilename, type Song } from "./types";
 import { getProvider } from "./registry";
 import { fetchDecryptedSodaAudio } from "./providers/soda";
+import { writeFileAtomic } from "./atomic-write";
+import { ffmpegPath } from "./env";
 import {
   DOWNLOAD_STATUS_FAILED,
   DOWNLOAD_STATUS_SKIPPED,
@@ -75,7 +77,7 @@ export async function resolveFFmpegPath(): Promise<string> {
     }
   }
   // 环境变量 MUSIC_DL_FFMPEG（对齐 Go ResolveFFmpegPath）> ffmpeg-static 兜底
-  const envPath = (process.env.MUSIC_DL_FFMPEG ?? "").trim();
+  const envPath = ffmpegPath();
   if (envPath) {
     try {
       const { code } = await execFileAsync(envPath, ["-version"], 8_000);
@@ -362,7 +364,8 @@ export function saveDownloadedSongToFile(result: DownloadedSong, outDir: string)
   const fileName = sanitizeDownloadRelativePath(result.filename);
   const filePath = path.join(targetDir, fileName);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, result.data);
+  // 审核整改 A-18：tmp+rename 原子落盘，崩溃/断电不留残缺音频（会被本地索引收录）
+  writeFileAtomic(filePath, result.data);
 
   result.filename = fileName;
   result.savedPath = filePath;
@@ -436,30 +439,39 @@ async function webdavRequest(
   method: string,
   target: URL,
   settings: WebSettings,
-  body?: Buffer,
+  body?: Buffer | ReadableStream<Uint8Array>,
   contentType?: string,
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   // 对齐 Go：无条件 SetBasicAuth（空账密也发送）
   headers.Authorization = `Basic ${Buffer.from(`${settings.webdavUsername ?? ""}:${settings.webdavPassword ?? ""}`).toString("base64")}`;
   if (contentType) headers["Content-Type"] = contentType;
+  const isStreamBody = body !== undefined && !(body instanceof Buffer);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEBDAV_TIMEOUT_MS);
   try {
-    return await fetch(target.toString(), {
+    // 审核整改 A-07：支持流式 PUT（chunked 传输，Content-Length 未知时不设）；
+    // duplex:"half" 为 undici 流式请求体要求（DOM lib 类型未收录，此处显式断言）
+    const init = {
       method,
       headers,
-      body: body ? new Uint8Array(body) : undefined,
+      body: body === undefined ? undefined : (body as BodyInit),
       signal: controller.signal,
-    });
+      ...(isStreamBody ? { duplex: "half" as const } : {}),
+    } as RequestInit;
+    return await fetch(target.toString(), init);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** UploadSongToWebDAV 移植：MKCOL 建目录 + PUT 上传 */
-export async function uploadSongToWebDAV(settings: WebSettings, filename: string, data: Buffer): Promise<void> {
-  if (!data.length) throw new Error("empty webdav upload data");
+/** UploadSongToWebDAV 移植：MKCOL 建目录 + PUT 上传（Buffer 或流式，审核整改 A-07） */
+export async function uploadSongToWebDAV(
+  settings: WebSettings,
+  filename: string,
+  data: Buffer | ReadableStream<Uint8Array>,
+): Promise<void> {
+  if (data instanceof Buffer && !data.length) throw new Error("empty webdav upload data");
   if (!filename.trim()) throw new Error("empty webdav upload filename");
   if (!webdavConfigured(settings)) return;
 
@@ -506,6 +518,7 @@ export function saveWebAssetToLocal(filename: string, data: Buffer): { savedPath
   fs.mkdirSync(targetDir, { recursive: true });
   const savedFilename = sanitizeFilename(filename.trim()) || "download";
   const savedPath = path.join(targetDir, savedFilename);
-  fs.writeFileSync(savedPath, data);
+  // 审核整改 A-18：tmp+rename 原子落盘
+  writeFileAtomic(savedPath, data);
   return { savedPath, savedFilename };
 }
