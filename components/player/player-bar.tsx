@@ -13,13 +13,14 @@ import { downloadUrl, coverUrl, sourceMeta, fmtTimeClient } from "@/lib/client/u
 import { NowPlaying } from "./now-playing";
 import { QueueDrawer } from "./queue-drawer";
 import { RateMenu } from "./rate-menu";
+import { QualityMenu } from "./quality-menu";
 import { toast } from "sonner";
 
 export function PlayerBar() {
   /* useShallow 精确订阅（排除 currentTime）：进度条由 BarProgress 独立消化 8Hz 更新 */
   const {
-    queue, index, playing, loading, duration, volume, muted, mode, rate,
-    toggle, next, prev, setVolume, toggleMute, cycleMode, setRate, seek,
+    queue, index, playing, loading, duration, volume, muted, mode, rate, quality,
+    toggle, next, prev, setVolume, toggleMute, cycleMode, setRate, setQuality, seek,
   } = usePlayer(
     useShallow((s) => ({
       queue: s.queue,
@@ -31,6 +32,7 @@ export function PlayerBar() {
       muted: s.muted,
       mode: s.mode,
       rate: s.rate,
+      quality: s.quality,
       toggle: s.toggle,
       next: s.next,
       prev: s.prev,
@@ -38,6 +40,7 @@ export function PlayerBar() {
       toggleMute: s.toggleMute,
       cycleMode: s.cycleMode,
       setRate: s.setRate,
+      setQuality: s.setQuality,
       seek: s.seek,
     })),
   );
@@ -209,6 +212,7 @@ export function PlayerBar() {
                 <ModeIcon className="h-[17px] w-[17px]" />
               </button>
               <RateMenu rate={rate} onPick={setRate} />
+              <QualityMenu quality={quality} onPick={setQuality} />
             </div>
             <BarProgress />
           </div>

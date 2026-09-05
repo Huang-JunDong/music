@@ -4,7 +4,7 @@
  * 前端 API 客户端 — 对接 /api/*（与 Go 版行为一一对应的路由）
  * 含 401 统一分流（跳登录页）与鉴权 API。
  */
-import type { Song, Playlist, PlaylistCategory, QRLoginSession, QRLoginResult } from "../types";
+import type { Song, Playlist, PlaylistCategory, QRLoginSession, QRLoginResult, SongQuality } from "../types";
 import { songParams } from "../play-url";
 
 export class ApiError extends Error {
@@ -305,8 +305,10 @@ export interface InspectResponse {
   song?: Song;
 }
 
-export function apiInspect(song: Song): Promise<InspectResponse> {
-  return getJSON(`/api/inspect?${songParams(song).toString()}`);
+export function apiInspect(song: Song, quality?: SongQuality): Promise<InspectResponse> {
+  const p = songParams(song);
+  if (quality && quality !== "best") p.set("quality", quality);
+  return getJSON(`/api/inspect?${p.toString()}`);
 }
 
 export function apiSwitchSource(song: Song, target?: string): Promise<Song> {
@@ -597,6 +599,31 @@ export function apiCreateQRLogin(source: string): Promise<QRLoginSession> {
 
 export function apiCheckQRLogin(source: string, key: string): Promise<QRLoginResult> {
   return getJSON(`/api/qr_login/${source}?key=${encodeURIComponent(key)}`);
+}
+
+/* ---------------- 浏览器级音源账号会话（多用户：每个访客登录自己的账号） ---------------- */
+
+export interface QRLoginStatus {
+  source: string;
+  cookie_source: string;
+  logged_in: boolean;
+}
+
+/** 查询当前浏览器是否已登录自己的音源账号 */
+export function apiQRLoginStatus(source: string): Promise<QRLoginStatus> {
+  return getJSON(`/api/qr_login/${source}?status=1`);
+}
+
+/** 退出"我的音源账号"（清除浏览器会话凭证，不影响服务器全局配置） */
+export function apiQRLogout(source: string): Promise<{ status: string }> {
+  return fetch(`/api/qr_login/${source}`, {
+    method: "DELETE",
+    headers: { "X-Requested-With": "XMLHttpRequest" },
+  }).then(async (r) => {
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new ApiError(body?.error ?? `HTTP ${r.status}`, r.status, body);
+    return body;
+  });
 }
 
 /* ---------------- 下载记录（字段对齐 Go：ID/Name/.../CreatedAt） ---------------- */

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { DetectSource, getProvider } from "@/lib/registry";
 import { defaultSourcesForSearchType, sourcesFromQuery } from "@/lib/web-core";
 import { filterSongsByExactArtist } from "@/lib/song-meta";
@@ -26,7 +27,9 @@ const SEARCH_MAX_TOTAL = 400;
  * GET /api/search?q=&type=song|playlist|album&exact_artist=&sources=(多值/逗号分隔)
  * 并发 allSettled 聚合；q 以 http 开头走链接解析（DetectSource→parse→parsePlaylist→parseAlbum）。
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const keyword = (params.get("q") ?? "").trim();
   if (!keyword) {

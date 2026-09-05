@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import {
   X, Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle,
-  Download, RefreshCcw, Loader2, Music4, Gauge, ChevronDown, ChevronUp,
+  Download, Loader2, Music4, Gauge, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -14,6 +14,9 @@ import { coverUrl, sourceMeta, switchSourceUrl, fmtSizeClient } from "@/lib/clie
 import { fmtTimeClient } from "@/lib/client/ui";
 import { apiInspect } from "@/lib/client/api";
 import { RateMenu } from "./rate-menu";
+import { QualityMenu } from "./quality-menu";
+import { SwitchSourceMenu } from "./switch-source-menu";
+import { VolumeMenu } from "./volume-menu";
 import { Spectrum } from "./spectrum";
 import type { ClientLyricLine, ClientLyricWord } from "@/lib/lrc-client";
 
@@ -175,8 +178,9 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
   /* useShallow 精确订阅（排除 currentTime/duration）：
    * currentTime 8Hz 更新不再触发整页渲染——进度条由 ProgressAndTime 独立消化 */
   const {
-    queue, index, playing, loading, mode, rate, lyrics, lyricsLoading,
-    toggle, next, prev, seek, cycleMode, autoSwitch, play, setRate,
+    queue, index, playing, loading, mode, rate, quality: qualityPref, volume, muted, lyrics, lyricsLoading,
+    toggle, next, prev, seek, cycleMode, autoSwitch, play, replaceCurrent, setRate, setQuality: setQualityPref,
+    setVolume, toggleMute,
   } = usePlayer(
     useShallow((s) => ({
       queue: s.queue,
@@ -185,6 +189,9 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
       loading: s.loading,
       mode: s.mode,
       rate: s.rate,
+      quality: s.quality,
+      volume: s.volume,
+      muted: s.muted,
       lyrics: s.lyrics,
       lyricsLoading: s.lyricsLoading,
       toggle: s.toggle,
@@ -194,7 +201,11 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
       cycleMode: s.cycleMode,
       autoSwitch: s.autoSwitch,
       play: s.play,
+      replaceCurrent: s.replaceCurrent,
       setRate: s.setRate,
+      setQuality: s.setQuality,
+      setVolume: s.setVolume,
+      toggleMute: s.toggleMute,
     })),
   );
   const song = index >= 0 && index < queue.length ? queue[index] : null;
@@ -311,7 +322,8 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
     }
   }, [mobileView]);
 
-  /* Range 探测：显示当前曲目实际大小与码率（失败回退 Song 自带字段） */
+  /* Range 探测：显示当前曲目实际大小与码率（失败回退 Song 自带字段）；
+   * qualityPref 透传 —— 切换音质档位后按新档位重新探测，显示与实际播放一致 */
   useEffect(() => {
     if (!song) return;
     let alive = true;
@@ -319,7 +331,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
     if (song.source === "local" || song.source === "local-file") {
       // 本地源：inspect 走本地探测（内嵌 bitrate/size）
     }
-    apiInspect(song)
+    apiInspect(song, qualityPref)
       .then((r) => {
         if (alive && r.valid) setQuality({ size: r.size, bitrate: r.bitrate });
       })
@@ -328,7 +340,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [song?.id, song?.source]);
+  }, [song?.id, song?.source, qualityPref]);
 
   /* ESC 关闭 */
   useEffect(() => {
@@ -357,17 +369,22 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
     ? `rgba(${Math.round(coverTone.r * 0.55)},${Math.round(coverTone.g * 0.55)},${Math.round(coverTone.b * 0.55)},0.34)`
     : "rgba(217,70,239,0.34)";
 
-  const doSwitch = async () => {
-    const tid = toast.loading("正在跨源匹配…");
+  /* 换源：target 传源名 = 定向换源（switch_source 的 target 参数），undefined = 智能匹配 */
+  const [switching, setSwitching] = useState(false);
+  const doSwitch = async (target?: string) => {
+    const tid = toast.loading(target ? `正在从${sourceMeta(target).label}匹配…` : "正在跨源匹配…");
+    setSwitching(true);
     try {
-      const r = await fetch(switchSourceUrl(song));
+      const r = await fetch(switchSourceUrl(song, target));
       const body = await r.json();
       if (!r.ok || !body?.id) throw new Error(body?.error ?? "未找到可播放的换源结果");
       toast.success(`已换源到 ${sourceMeta(body.source).label}：${body.name}`, { id: tid });
-      /* 替换队列中当前曲目并立即播放新源 */
-      play(body, queue.map((s, i) => (i === index ? body : s)));
+      /* 替换队列中当前曲目并立即播放新源（replaceCurrent 绕开 play() 的"同位重播=停止"语义） */
+      replaceCurrent(body);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "换源失败", { id: tid });
+    } finally {
+      setSwitching(false);
     }
   };
 
@@ -580,9 +597,12 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
               <button onClick={() => next()} aria-label="下一首" className="flex h-12 w-12 items-center justify-center rounded-full text-zinc-300 transition-all hover:text-white active:scale-90">
                 <SkipForward className="h-6 w-6" fill="currentColor" />
               </button>
+              {/* 音量：紧邻下一曲右侧，点击弹出音量面板（静音切换 + 滑条 + 百分比） */}
+              <VolumeMenu volume={volume} muted={muted} onVolume={setVolume} onToggleMute={toggleMute} />
             </div>
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex flex-wrap items-center justify-center gap-2">
               <RateMenu rate={rate} onPick={setRate} />
+              <QualityMenu quality={qualityPref} onPick={setQualityPref} />
               <button
                 onClick={cycleMode}
                 aria-label="播放模式"
@@ -596,14 +616,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
                 <ModeIcon className="h-3.5 w-3.5" aria-hidden="true" />
                 {mode === "order" ? "顺序" : mode === "loop-one" ? "循环" : "随机"}
               </button>
-              <button
-                onClick={doSwitch}
-                aria-label="换源播放"
-                className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-fuchsia-400/40 hover:text-fuchsia-200 active:scale-95 disabled:opacity-40"
-              >
-                <RefreshCcw className="h-3.5 w-3.5" />
-                换源播放
-              </button>
+              <SwitchSourceMenu source={song.source} busy={switching} onPick={doSwitch} />
               <button
                 onClick={onDownload}
                 aria-label="下载"

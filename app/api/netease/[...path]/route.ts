@@ -11,7 +11,8 @@ import { createRequest } from "@/lib/netease/request";
 import { cookieToJson, generateRandomChineseIP } from "@/lib/netease/utils";
 import { ncmGlobals } from "@/lib/netease/global-state";
 import { mergeStoredCookie } from "@/lib/netease";
-import { getCookie } from "@/lib/cookies";
+import { getCookie, createSourceSessionStore, runWithSourceSession } from "@/lib/cookies";
+import { browserSourceCookies, requestIsHttps, srcSessionSetCookie } from "@/lib/source-session";
 import { enableGeneralUnblock, enableProxy, proxyUrl } from "@/lib/env";
 import { md5hex } from "@/lib/crypto";
 import { logger } from "@/lib/netease/logger";
@@ -120,8 +121,7 @@ function clientIP(req: NextRequest): string {
 /** 对齐源 server.js：https 下补 SameSite=None; Secure（修 CORS SameSite），http 原样回写。
  *  安全增强（审核 2.2）：统一加 HttpOnly —— 登录态由服务端 SQLite 管理，前端无需 JS 读取这些 Cookie */
 function appendSetCookies(res: NextResponse, cookies: string[], req: NextRequest): void {
-  const isHttps =
-    req.nextUrl.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+  const isHttps = requestIsHttps(req); // 审核整改 P2-02：与 srcSessionSetCookie 统一判定（含多级反代 proto 首段）
   for (const cookie of cookies) {
     res.headers.append(
       "Set-Cookie",
@@ -133,6 +133,19 @@ function appendSetCookies(res: NextResponse, cookies: string[], req: NextRequest
 }
 
 async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  /* 多用户：浏览器自带 netease 凭证优先于全局；自带时上游 Set-Cookie 刷新改道回写浏览器 */
+  const browser = browserSourceCookies(req);
+  const session = createSourceSessionStore(browser, "netease" in browser);
+  const secure = requestIsHttps(req);
+  return runWithSourceSession(session, async () => {
+    const res = await handleNetease(req, ctx);
+    const refreshed = session.pendingWrites.get("netease");
+    if (refreshed) res.headers.append("Set-Cookie", srcSessionSetCookie("netease", refreshed, secure));
+    return res;
+  });
+}
+
+async function handleNetease(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
   const { path } = await ctx.params;
   const routePath = "/" + (path ?? []).join("/");
   const entry = resolveRoute(routePath);
@@ -226,9 +239,11 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
       }
     }
 
-    // 登录态闭环：响应携带 MUSIC_U 时合并回 SQLite
+    // 登录态闭环：响应携带 MUSIC_U 时合并回 SQLite；
+    // 显式传 cookie 的请求视为临时身份，一律不写全局库（审核整改 P1-01：防任意访客覆盖全局兜底凭证；
+    // 匿名访客带浏览器凭证时由请求级会话改道回写其浏览器，见 handle 包装）
     const setCookies = moduleResponse.cookie ?? [];
-    if (!query.noCookie && setCookies.some((c: string) => /MUSIC_U=/.test(c))) {
+    if (!hasExplicitCookie && !query.noCookie && setCookies.some((c: string) => /MUSIC_U=/.test(c))) {
       try {
         mergeStoredCookie(setCookies);
       } catch {
@@ -269,7 +284,7 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
     if ((err.body as any).code == "301" || (err.body as any).code === 301) {
       (err.body as any).msg = "需要登录";
     }
-    if (!query.noCookie && Array.isArray(err.cookie) && err.cookie.length > 0) {
+    if (!hasExplicitCookie && !query.noCookie && Array.isArray(err.cookie) && err.cookie.length > 0) {
       try {
         mergeStoredCookie(err.cookie);
       } catch {

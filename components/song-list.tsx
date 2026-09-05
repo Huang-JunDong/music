@@ -811,6 +811,7 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
           const swKey = songKey(s);
           const sel = selected.has(swKey);
           const tokens = artistTokens(s.artist);
+          const q = qualityTag(s.bitrate, s.ext);
           return (
             <motion.li
               key={`${s.source}-${s.id}-${i}`}
@@ -856,7 +857,10 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                   <span className="shrink-0">{inspectTag(s)}</span>
                 </span>
                 <span className="flex w-full items-center gap-1.5 text-[11.5px] text-zinc-500">
-                  <span className={`shrink-0 rounded border px-1 py-px text-[9px] ${meta.badge}`}>{meta.label}</span>
+                  <span className={`shrink-0 rounded border px-1 py-px text-[9px] ${meta.badge}`}>
+                    {meta.label}
+                    {q ? <span className="ml-1 opacity-70">{q}</span> : null}
+                  </span>
                   {localBadge(s, "shrink-0 text-[9px]")}
                   {tokens.length > 0 ? (
                     <span

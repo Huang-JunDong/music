@@ -38,7 +38,10 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
   return true;
 }
 
-/** 提取客户端 IP（x-forwarded-for 首段优先） */
+/** 提取客户端 IP（x-forwarded-for 首段优先）。
+ *  审核整改 P2-01：XFF 可被客户端伪造——生产部署必须置于可信反向代理之后，
+ *  由代理覆写 x-forwarded-for/x-real-ip（README「反向代理与限流」）；无代理直连暴露时
+ *  限流维度可被伪造头绕过（qr_login 等按 IP 限流接口）。 */
 export function requestIP(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();

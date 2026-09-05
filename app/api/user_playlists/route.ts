@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProvider, GetSourceDescription } from "@/lib/registry";
 import { filterAvailableSources, sourcesFromQuery, USER_PLAYLIST_SOURCE_NAMES } from "@/lib/web-core";
+import { createSourceSessionStore, runWithSourceSession } from "@/lib/cookies";
+import { browserSourceCookies, requestIsHttps, srcSessionSetCookie } from "@/lib/source-session";
 import type { Playlist } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,6 +15,23 @@ export const dynamic = "force-dynamic";
  * 上游未配置 Cookie 时由各源自行报错（tab.error 呈现）。
  */
 export async function GET(req: NextRequest) {
+  /* 多用户：浏览器自带音源凭证（自己扫码登录的账号）优先，未带时回退服务器全局存储。
+     抑制 provider 写库（免登录接口不触碰全局配置）；审核整改 P3-01：浏览器自带源的上游凭证刷新
+     改道回写该浏览器（仅 values 内的源——该源生效凭证即访客自己的，回写安全；
+     全局兜底凭证的刷新不外发浏览器，仍由 /api/netease、/api/qq 代理路径负责落库） */
+  const session = createSourceSessionStore(browserSourceCookies(req), true);
+  const secure = requestIsHttps(req);
+  return runWithSourceSession(session, async () => {
+    const res = await loadUserPlaylistTabs(req);
+    for (const [source, value] of session.pendingWrites) {
+      if (!session.values.has(source) || !value) continue;
+      res.headers.append("Set-Cookie", srcSessionSetCookie(source, value, secure));
+    }
+    return res;
+  });
+}
+
+async function loadUserPlaylistTabs(req: NextRequest): Promise<NextResponse> {
   const sources = filterAvailableSources(
     sourcesFromQuery(req.nextUrl.searchParams),
     USER_PLAYLIST_SOURCE_NAMES,

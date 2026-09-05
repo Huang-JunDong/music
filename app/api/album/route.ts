@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider } from "@/lib/registry";
 import { GetOriginalLink } from "@/lib/original-link";
 import { importCollectionFromQuery } from "@/lib/import-collection";
@@ -11,7 +12,9 @@ export const dynamic = "force-dynamic";
  * GET /api/album?id=&source= → {album, songs, import_collection?}（getAlbumSongs）
  * 广场/搜索入口仅带 id+source：元信息缺失时并行 parseAlbum 回填（失败不影响曲目）。
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const id = params.get("id") ?? "";
   const source = params.get("source") ?? "";

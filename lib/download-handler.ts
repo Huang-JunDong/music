@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 import { getProvider, songFromParams } from "./registry";
+import { normalizeSongQuality } from "./types";
 import {
   audioMimeByExt,
   buildDownloadFilename,
@@ -127,6 +128,141 @@ async function serveLocalMusic(req: NextRequest, id: string, saveLocal: boolean)
   return new NextResponse(nodeStreamBody(fs.createReadStream(absPath)), { status: 200, headers });
 }
 
+/* ---------------- 上游断流自愈（本项目特有） ---------------- */
+
+const STREAM_RESUME_RETRIES = 3;
+/** 单次读空闲超时：QQ 黑洞式掐流（连接挂起、不发数据也不 EOF）不会触发提前结束检测，须主动断开重连 */
+const STREAM_IDLE_TIMEOUT_MS = 20_000;
+/** 续传请求响应头超时（headers 秒回，超时即判定直链不可用） */
+const STREAM_RESUME_HEADERS_TIMEOUT_MS = 30_000;
+
+/** `bytes 1234-5678/9…` → 1234（非 206 无此头时为 0） */
+function contentRangeStart(contentRange: string | null): number {
+  const m = (contentRange ?? "").match(/^bytes (\d+)-/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/** 带空闲超时的读：null = 超时（黑洞连接），reject = 连接错误 */
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ms: number,
+): Promise<ReadableStreamReadResult<Uint8Array> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * 单连接透传（fetch → Response.body）在上游断流时客户端只能拿到半个文件
+ * ——206/Content-Length 头已发出，无法整段重来。此包装统计已写字节，检测到
+ * 提前 EOF / 读错误 / 空闲超时，即以 Range: bytes=<offset>- 续写（最多
+ * STREAM_RESUME_RETRIES 次）：
+ * - 优先复用原直链；失败（vkey 过期/CDN 拒绝）则经 refreshUrl 重新取直链再试；
+ * - 续传响应须为 206 且 Content-Range 起始字节与文件总长均吻合——防止上游
+ *   忽略 Range 整段重发（数据重复）或直链刷新后档位降级（文件变短）导致拼接损坏；
+ * - 对播放器与下载器完全透明；重试耗尽仍不足量则按短流收尾。
+ */
+function resumeUpstreamBody(opts: {
+  getUrl: () => string;
+  refreshUrl: () => Promise<string>;
+  label: string;
+  source: string;
+  totalBytes: number;
+  baseOffset: number;
+  expectedLength: number;
+  initial: ReadableStream<Uint8Array>;
+}): ReadableStream<Uint8Array> {
+  const { getUrl, refreshUrl, label, source, totalBytes, baseOffset, expectedLength, initial } = opts;
+  let sent = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = initial.getReader();
+  let retries = 0;
+
+  const dropReader = () => {
+    reader?.cancel().catch(() => {});
+    reader = null;
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      for (;;) {
+        if (!reader) {
+          if (sent >= expectedLength || retries >= STREAM_RESUME_RETRIES) {
+            if (sent < expectedLength) {
+              console.warn(
+                `[stream-resume] ${label}: short stream ${sent}/${expectedLength} bytes after ${retries} retries`,
+              );
+            }
+            controller.close();
+            return;
+          }
+          retries++;
+          const from = baseOffset + sent;
+          console.warn(`[stream-resume] ${label}: interrupted at ${sent}/${expectedLength}, retry #${retries} from byte ${from}`);
+          let resumeUrl = getUrl();
+          try {
+            let resp = await fetchSource(resumeUrl, source, `bytes=${from}-`, STREAM_RESUME_HEADERS_TIMEOUT_MS).catch(
+              async (err) => {
+                console.warn(
+                  `[stream-resume] ${label}: reuse url failed (${err instanceof Error ? err.message : err}), refreshing`,
+                );
+                resumeUrl = await refreshUrl();
+                return fetchSource(resumeUrl, source, `bytes=${from}-`, STREAM_RESUME_HEADERS_TIMEOUT_MS);
+              },
+            );
+            const m = (resp.headers.get("content-range") ?? "").match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/);
+            const startOk = !!m && parseInt(m[1], 10) === from;
+            const totalOk = !!m && (m[3] === "*" || parseInt(m[3], 10) === totalBytes);
+            if (resp.status !== 206 || !resp.body || !startOk || !totalOk) {
+              resp.body?.cancel().catch(() => {});
+              throw new Error(
+                `resume mismatch: status ${resp.status}, range ${resp.headers.get("content-range") ?? "-"}`,
+              );
+            }
+            reader = resp.body.getReader();
+          } catch (err) {
+            console.warn(`[stream-resume] ${label}: resume failed: ${err instanceof Error ? err.message : err}`);
+            continue;
+          }
+        }
+        let result: ReadableStreamReadResult<Uint8Array> | null;
+        try {
+          result = await readWithIdleTimeout(reader, STREAM_IDLE_TIMEOUT_MS);
+        } catch {
+          dropReader(); // 连接被重置 → 续传
+          continue;
+        }
+        if (result === null) {
+          console.warn(`[stream-resume] ${label}: idle ${STREAM_IDLE_TIMEOUT_MS}ms, dropping connection`);
+          dropReader();
+          continue;
+        }
+        if (result.done) {
+          reader = null;
+          if (sent < expectedLength) continue; // 提前 EOF → 续传
+          controller.close();
+          return;
+        }
+        if (result.value) {
+          sent += result.value.length;
+          controller.enqueue(result.value);
+        }
+        return; // 每次 pull 至多入队一块，保持背压
+      }
+    },
+    cancel(reason) {
+      reader?.cancel(reason).catch(() => {});
+    },
+  });
+}
+
 /* ---------------- 主流程（对齐 Go downloadHandler 六分支） ---------------- */
 
 export async function handleDownload(req: NextRequest): Promise<NextResponse> {
@@ -228,6 +364,9 @@ export async function handleDownload(req: NextRequest): Promise<NextResponse> {
     return new NextResponse("Unknown source", { status: 400 });
   }
 
+  /* 音质偏好（stream=1 播放与普通下载共用；save_local/embed 下载固定最高档） */
+  const quality = normalizeSongQuality(params.get("quality"));
+
   // ---- 分支 3：soda（加密流必须服务端解密，Range 不适用） ----
   if (source === "soda") {
     const { fetchDecryptedSodaAudio } = await import("./providers/soda");
@@ -269,7 +408,7 @@ export async function handleDownload(req: NextRequest): Promise<NextResponse> {
   // ---- 分支 4：普通流代理（Range 透传） ----
   let upstreamUrl: string;
   try {
-    upstreamUrl = await provider.getStreamUrl(song);
+    upstreamUrl = await provider.getStreamUrl(song, quality);
   } catch {
     // 审核整改 A-24：直链获取失败属上游故障，语义为 502 而非 404（资源并非不存在）
     return new NextResponse("Failed to get URL", { status: 502 });
@@ -311,8 +450,9 @@ export async function handleDownload(req: NextRequest): Promise<NextResponse> {
   let upstream: Response;
   const rangeHeader = req.headers.get("range");
   try {
-    // 大文件流式传输不设整体超时（对齐 Go http.Client{} 无超时语义）
-    upstream = await fetchSource(upstreamUrl, source, rangeHeader, 0);
+    // 响应头到达设 30s 上限（headers 正常秒回，超时即直链不可用→502 触发客户端重试）；
+    // 响应体不设整体超时（对齐 Go http.Client{} 无超时语义，断流由自愈流接管）
+    upstream = await fetchSource(upstreamUrl, source, rangeHeader, 30_000);
   } catch {
     return new NextResponse("Upstream stream error", { status: 502 });
   }
@@ -342,12 +482,38 @@ export async function handleDownload(req: NextRequest): Promise<NextResponse> {
     headers.set("Content-Disposition", downloadDisposition(filename));
   }
 
+  // 上游断流自愈：QQ 等源 CDN 会对长连接限速/中途掐断（提前 EOF / 连接重置 /
+  // 黑洞挂起），单连接透传下客户端只拿半个文件（206/Content-Length 头已发出
+  // 无法整段重来）。长度已知且上游支持 Range（206 / Accept-Ranges: bytes）时
+  // 以断点续拉包装透传体；续传失败自动刷新直链（vkey 可能已过期）。
+  const declaredLength = parseInt(upstream.headers.get("content-length") ?? "", 10);
+  const rangeCapable =
+    upstream.status === 206 || (upstream.headers.get("accept-ranges") ?? "").trim().toLowerCase() === "bytes";
+  let responseBody: ReadableStream<Uint8Array> | null = upstream.body;
+  if (upstream.body && rangeCapable && Number.isFinite(declaredLength) && declaredLength > 0) {
+    let currentUrl = upstreamUrl;
+    const baseOffset = contentRangeStart(upstream.headers.get("content-range"));
+    responseBody = resumeUpstreamBody({
+      getUrl: () => currentUrl,
+      refreshUrl: async () => {
+        currentUrl = await provider.getStreamUrl(song, quality);
+        return currentUrl;
+      },
+      label: `${source}:${song.name}`,
+      source,
+      totalBytes: baseOffset + declaredLength,
+      baseOffset,
+      expectedLength: declaredLength,
+      initial: upstream.body,
+    });
+  }
+
   // 审核整改 A-07：WebDAV 配置且非 stream 播放时改 tee 流式——客户端立即收到流式响应，
   // WebDAV 后台以 chunked PUT 上传（失败仅服务端日志，见审核文档冲突标记：
   // 偏离 Go"整段缓冲同步上传 + warning header"语义，换取消除并发 N 曲内存放大）。
-  if (webdavConfigured(settings) && !streamPlayback && upstream.body) {
+  if (webdavConfigured(settings) && !streamPlayback && responseBody) {
     if (upstream.status >= 200 && upstream.status < 300) {
-      const [toClient, toWebdav] = upstream.body.tee();
+      const [toClient, toWebdav] = responseBody.tee();
       void uploadSongToWebDAV(settings, filename, toWebdav).catch((err) => {
         console.warn(`[webdav] async upload failed: ${err instanceof Error ? err.message : err}`);
       });
@@ -355,5 +521,5 @@ export async function handleDownload(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  return new NextResponse(upstream.body, { status: upstream.status, headers });
+  return new NextResponse(responseBody, { status: upstream.status, headers });
 }

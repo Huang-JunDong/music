@@ -23,6 +23,8 @@ import {
 } from "@/lib/qq/registry";
 import { CredentialExpiredError, LoginError, NetworkError, RateLimitedError } from "@/lib/qq/errors";
 import { loadCredential, saveCredential } from "@/lib/qq/credential";
+import { createSourceSessionStore, runWithSourceSession } from "@/lib/cookies";
+import { browserSourceCookies, requestIsHttps, srcSessionSetCookie } from "@/lib/source-session";
 import { applyResponseMap, wrapSuccess } from "@/lib/qq/response-map";
 import { refreshCredential } from "@/lib/qq/modules/login";
 
@@ -66,6 +68,22 @@ function weakEtag(body: unknown): string {
 }
 
 async function handle(
+  req: NextRequest,
+  ctx: { params: Promise<{ path?: string[] }> },
+): Promise<Response> {
+  /* 多用户：浏览器自带 QQ 凭证优先于全局；自带时凭证刷新（saveCredential）改道回写浏览器 */
+  const browser = browserSourceCookies(req);
+  const session = createSourceSessionStore(browser, "qq" in browser);
+  const secure = requestIsHttps(req);
+  return runWithSourceSession(session, async () => {
+    const res = await handleQQ(req, ctx);
+    const refreshed = session.pendingWrites.get("qq");
+    if (refreshed) res.headers.append("Set-Cookie", srcSessionSetCookie("qq", refreshed, secure));
+    return res;
+  });
+}
+
+async function handleQQ(
   req: NextRequest,
   ctx: { params: Promise<{ path?: string[] }> },
 ): Promise<Response> {
@@ -127,12 +145,23 @@ async function handle(
   }
 
   const cacheable = req.method === "GET" && matched.def.cacheSec;
-  // 缓存键：query 参数排序后拼接（顺序无关，对齐参考实现的 path+参数排序哈希）
-  const cacheKey = cacheable
-    ? `${routePath}?${[...req.nextUrl.searchParams.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join("&")}`
-    : "";
-  if (cacheable && cacheKey) {
-    const hit = cacheGet(cacheKey);
+  // 缓存键：query 参数排序后拼接（顺序无关，对齐参考实现的 path+参数排序哈希）；
+  // 多用户会话隔离：附带生效凭证指纹（浏览器自带/全局/游客各自缓存，杜绝跨账号回放）。
+  // 审核整改 P3-03：指纹随 client.credential 动态计算——凭证自动刷新后写入键按最终凭证重算，
+  // 与下一次请求的读取键一致（旧凭证 key 下的条目自然过期淘汰）。
+  const sortedQuery = [...req.nextUrl.searchParams.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+  const credFingerprint = (): string => {
+    const c = client.credential;
+    return c.musicid || c.musickey
+      ? createHash("sha1").update(`${c.musicid}:${c.musickey}`).digest("hex").slice(0, 16)
+      : "anon";
+  };
+  const buildCacheKey = (): string => (cacheable ? `${routePath}?${sortedQuery}#${credFingerprint()}` : "");
+  if (cacheable) {
+    const hit = cacheGet(buildCacheKey());
     if (hit !== null) {
       // 对齐参考 cached_response：附带剩余 TTL 的 Cache-Control + ETag/304 协商
       const res = NextResponse.json(hit as never);
@@ -170,7 +199,7 @@ async function handle(
     const raw = await invokeWithRetry();
     const mapped = applyResponseMap(matched.def.id, raw);
     const wrapped = wrapSuccess(mapped);
-    if (cacheable && cacheKey) cacheSet(cacheKey, wrapped, matched.def.cacheSec!);
+    if (cacheable) cacheSet(buildCacheKey(), wrapped, matched.def.cacheSec!);
     const etag = weakEtag(wrapped);
     if (req.headers.get("if-none-match") === etag) {
       return new NextResponse(null, { status: 304, headers: { ETag: etag } });

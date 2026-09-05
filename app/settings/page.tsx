@@ -289,19 +289,7 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
           }
           setQr((s) => (s && s.status === "waiting" ? { ...s, status: "scanned" } : s));
         } else if (r.status === "success") {
-          const cookieMap =
-            r.cookies && Object.keys(r.cookies).length > 0
-              ? r.cookies
-              : r.cookie
-                ? { [r.source]: r.cookie }
-                : null;
-          if (cookieMap) {
-            try {
-              await apiSaveCookies(cookieMap);
-            } catch {
-              toast.error("登录成功，但 Cookie 保存失败，请到「手动 Cookie」中保存");
-            }
-          }
+          /* P2-02：凭证不经前端——服务端已写库（管理员/桌面模式）并经 HttpOnly Set-Cookie 下发浏览器 */
           toast.success(`${sourceMeta(qr.source).label} 登录成功`);
           setQr(null);
           onCookieChanged();

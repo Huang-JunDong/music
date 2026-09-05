@@ -20,6 +20,7 @@ import type {
   PlaylistDetail,
   QRLoginSession,
   QRLoginResult,
+  SongQuality,
 } from "../types";
 import { firstNonEmpty } from "../http";
 import { decryptQRCHex, parseQRC, convertVerbatimLRC, defaultDisplayOrder, type QrcMultiData } from "../qrc";
@@ -248,8 +249,8 @@ export const qq: MusicProvider = {
     return song;
   },
 
-  // ---------------- 直链（七档降级策略保留，走新 getSongUrls） ----------------
-  async getStreamUrl(song: Song): Promise<string> {
+  // ---------------- 直链（七档降级策略保留，走新 getSongUrls；支持音质偏好过滤） ----------------
+  async getStreamUrl(song: Song, quality?: SongQuality): Promise<string> {
     if (song.source !== "qq") throw new Error("source mismatch");
     const c = client();
     let songMID = song.id;
@@ -257,7 +258,7 @@ export const qq: MusicProvider = {
 
     const isVip = await isVipAccount(c).catch(() => false);
     // 档位从优到劣：Master / Atmos5.1 / Atmos2.0 / FLAC / OGG640 / 320k / 128k；非 VIP 仅 320k/128k
-    const ladder: qqSong.SongFileTypeDef[] = isVip
+    const fullLadder: qqSong.SongFileTypeDef[] = isVip
       ? [
           qqSong.SongFileType.MASTER,
           qqSong.SongFileType.ATMOS_51,
@@ -268,6 +269,23 @@ export const qq: MusicProvider = {
           qqSong.SongFileType.MP3_128,
         ]
       : [qqSong.SongFileType.MP3_320, qqSong.SongFileType.MP3_128];
+    // 音质偏好截断阶梯（不可用档位自动向下降级）：
+    // standard=128 封顶 / high=320 封顶 / lossless=FLAC 封顶 / best=全阶梯自动
+    let ladder = fullLadder;
+    if (quality === "standard") {
+      ladder = [qqSong.SongFileType.MP3_128];
+    } else if (quality === "high") {
+      ladder = fullLadder.filter((t) => t === qqSong.SongFileType.MP3_320 || t === qqSong.SongFileType.MP3_128);
+    } else if (quality === "lossless") {
+      ladder = fullLadder.filter(
+        (t) =>
+          t === qqSong.SongFileType.FLAC ||
+          t === qqSong.SongFileType.OGG_640 ||
+          t === qqSong.SongFileType.MP3_320 ||
+          t === qqSong.SongFileType.MP3_128,
+      );
+    }
+    if (!ladder.length) ladder = fullLadder;
 
     const resp = (await qqSong.getSongUrls(
       c,
@@ -872,7 +890,12 @@ export const qq: MusicProvider = {
       extra: { event: result.event },
     };
     if (result.done && result.credential) {
-      saveCredential(result.credential);
+      /* 全局库写入失败降级为仅浏览器会话（登录成果不被存储层故障吞掉，对齐路由层既定策略） */
+      try {
+        saveCredential(result.credential);
+      } catch {
+        /* 凭证仍经响应 Set-Cookie 下发浏览器 */
+      }
       vipCache = null;
       qrSessions.delete(key);
       loginResult.cookie = credentialToCookie(result.credential);
@@ -939,7 +962,12 @@ export async function checkWXQRLogin(key: string): Promise<QRLoginResult> {
     extra: { event: result.event },
   };
   if (result.done && result.credential) {
-    saveCredential(result.credential);
+    /* 同 checkQRLogin：全局库写入失败降级为仅浏览器会话 */
+    try {
+      saveCredential(result.credential);
+    } catch {
+      /* 凭证仍经响应 Set-Cookie 下发浏览器 */
+    }
     vipCache = null;
     wxSessions.delete(key);
     loginResult.cookie = credentialToCookie(result.credential);

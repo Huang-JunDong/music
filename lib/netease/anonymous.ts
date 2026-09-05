@@ -15,6 +15,9 @@ const TOKEN_FILE = path.join(process.cwd(), "data", "netease-anonymous-token.jso
 
 let memoryToken = "";
 let registering: Promise<string> | null = null;
+/* 注册失败/空 token 冷却：防止每个业务请求都重新注册 → 高频注册触发上游 400 风控 */
+let lastFailedAt = 0;
+const REGISTER_COOLDOWN_MS = 60_000;
 
 function cloudmusicDllEncodeId(someId: string): string {
   let xoredString = "";
@@ -50,7 +53,8 @@ async function registerAnonymousToken(
   query: Record<string, any> = {},
 ): Promise<any> {
   const deviceId = generateDeviceId();
-  logger.info(`Successfully registered anonimous token, deviceId: ${deviceId}`);
+  /* 对齐上游日志位置（请求前打印），但措辞改为"正在注册"避免误导 */
+  logger.info(`registering anonymous token, deviceId: ${deviceId}`);
   ncmGlobals.deviceId = deviceId;
   const encodedId = Buffer.from(`${deviceId} ${cloudmusicDllEncodeId(deviceId)}`, "utf8").toString("base64");
 
@@ -67,6 +71,8 @@ export async function ensureAnonymousToken(
     memoryToken = fromFile;
     return memoryToken;
   }
+  /* 冷却期内不再发起注册（上次失败/空 token），业务请求以无 token 游客态继续 */
+  if (Date.now() - lastFailedAt < REGISTER_COOLDOWN_MS) return "";
   if (!registering) {
     registering = (async () => {
       try {
@@ -79,9 +85,18 @@ export async function ensureAnonymousToken(
         if (token) {
           memoryToken = token;
           saveToFile(token);
+        } else {
+          /* code=200 但 Set-Cookie 无 MUSIC_A：视为失败（进冷却），否则每个请求都会重新注册 */
+          lastFailedAt = Date.now();
+          const cookieNames = (result.cookie || [])
+            .map((c: string) => c.split(";")[0].split("=")[0].trim())
+            .filter(Boolean)
+            .join(",");
+          logger.warn(`[anonymous] code=200 but MUSIC_A missing (set-cookie: ${cookieNames || "none"})`);
         }
         return token;
       } catch (e) {
+        lastFailedAt = Date.now();
         logger.warn("[anonymous]", (e as Error).message);
         return "";
       } finally {

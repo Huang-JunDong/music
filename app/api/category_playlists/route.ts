@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, GetSourceDescription } from "@/lib/registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** GET /api/category_playlists?source=&category_id=&category_name= → {playlists:[...]} */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const source = (params.get("source") ?? "").trim();
   const categoryID = (params.get("category_id") ?? "").trim();

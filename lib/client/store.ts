@@ -2,7 +2,7 @@
 
 /** 全局播放器状态（zustand）：队列 / 控制 / 歌词 / MediaSession / 失效跳过+自动换源 / 播放自动缓存 */
 import { create } from "zustand";
-import type { Song } from "../types";
+import type { Song, SongQuality } from "../types";
 import { parseLrcClient, type ClientLyricLine } from "../lrc-client";
 import { downloadUrl, streamUrl, lyricUrl, switchSourceUrl } from "../play-url";
 import { apiAutoCacheOnPlay } from "./api";
@@ -11,6 +11,34 @@ export type PlayMode = "order" | "loop-one" | "shuffle";
 
 /** 倍速档位（对齐 Go playback_rate：0.5–2.0） */
 export const PLAY_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+
+/** 音质偏好本地持久化键（localStorage；非法/缺失时回退 best） */
+const QUALITY_LS_KEY = "music_dl_quality";
+
+/** setQuality 的进度恢复回调（连续切换时先摘旧再挂新，防 loadedmetadata 残留竞态） */
+let qualityResumeHandler: (() => void) | null = null;
+
+/** 摘除挂起中的进度恢复回调（切歌/停止/清队列时调用，防旧回调 seek 到上一首进度） */
+function clearQualityResume(): void {
+  if (qualityResumeHandler) {
+    try {
+      getAudio().removeEventListener("loadedmetadata", qualityResumeHandler);
+    } catch {
+      /* SSR */
+    }
+    qualityResumeHandler = null;
+  }
+}
+
+function readStoredQuality(): SongQuality {
+  try {
+    const v = (window.localStorage.getItem(QUALITY_LS_KEY) ?? "").trim();
+    if (v === "standard" || v === "high" || v === "lossless") return v;
+  } catch {
+    /* SSR / 隐私模式 */
+  }
+  return "best";
+}
 
 /* 播放相关系统设置缓存（页面加载后拉取一次；设置修改后刷新页面生效） */
 let playerSettingsCache: { autoSwitchInvalidSources: boolean } | null = null;
@@ -56,6 +84,8 @@ interface PlayerState {
   mode: PlayMode;
   /** 播放倍速 */
   rate: number;
+  /** 播放音质偏好（QQ/网易等源映射对应档位；切换后重载当前曲目并保持进度） */
+  quality: SongQuality;
   /** 播放历史（最近 100 首，最新在前） */
   history: Song[];
   lyrics: ClientLyricLine[];
@@ -77,11 +107,15 @@ interface PlayerState {
   cycleMode: () => void;
   setRate: (r: number) => void;
   cycleRate: () => void;
+  /** 切换音质偏好：持久化 + 当前曲目按新档位重载（保持播放进度与播放态） */
+  setQuality: (q: SongQuality) => void;
   removeFromQueue: (i: number) => void;
   clearQueue: () => void;
   clearHistory: () => void;
   /** 失效自动换源（对齐 Go autoSwitchInvalidSources） */
   autoSwitch: (song: Song) => Promise<Song | null>;
+  /** 替换队列当前位置并立即播放（手动/定向换源用；不走 play() 的"同位重播=停止"语义） */
+  replaceCurrent: (song: Song) => void;
 }
 
 /* 模块级 audio 单例 */
@@ -160,7 +194,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
     set({ history });
     try {
       const el = a();
-      el.src = streamUrl(song);
+      clearQualityResume();
+      el.src = streamUrl(song, get().quality);
       el.playbackRate = get().rate;
       el.play().catch(() => set({ playing: false, loading: false }));
     } catch {
@@ -185,6 +220,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     muted: false,
     mode: "order",
     rate: 1,
+    quality: readStoredQuality(),
     history: [],
     lyrics: [],
     lyricsLoading: false,
@@ -237,6 +273,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     stop: () => {
       try {
         const el = a();
+        clearQualityResume();
         el.pause();
         el.currentTime = 0;
       } catch {
@@ -325,6 +362,48 @@ export const usePlayer = create<PlayerState>((set, get) => {
       get().setRate(nextRate);
     },
 
+    setQuality: (q) => {
+      if (get().quality === q) return;
+      set({ quality: q });
+      try {
+        window.localStorage.setItem(QUALITY_LS_KEY, q);
+      } catch {
+        /* 隐私模式等写入失败不阻断 */
+      }
+      /* 正在播放的曲目：按新档位重载直链并恢复进度（换音质的零中断体验） */
+      const { index, queue, playing, currentTime } = get();
+      if (index < 0 || index >= queue.length) return;
+      const resumeAt = currentTime;
+      try {
+        const el = a();
+        /* 先摘除上一次的进度恢复回调（连续快速切换时旧 loadedmetadata 监听残留会 seek 到旧进度） */
+        if (qualityResumeHandler) {
+          el.removeEventListener("loadedmetadata", qualityResumeHandler);
+          qualityResumeHandler = null;
+        }
+        el.src = streamUrl(queue[index], q);
+        set({ loading: true });
+        const onMeta = () => {
+          /* 自移除：audio 是模块级单例，残留监听会在下一次 loadedmetadata（切歌）时 seek 到旧进度 */
+          el.removeEventListener("loadedmetadata", onMeta);
+          qualityResumeHandler = null;
+          if (resumeAt > 0 && Number.isFinite(el.duration)) {
+            try {
+              el.currentTime = Math.min(resumeAt, Math.max(0, el.duration - 0.5));
+            } catch {
+              /* seek 失败保持从头 */
+            }
+          }
+        };
+        qualityResumeHandler = onMeta;
+        el.addEventListener("loadedmetadata", onMeta);
+        if (playing) el.play().catch(() => set({ playing: false, loading: false }));
+        else set({ loading: false });
+      } catch {
+        /* SSR */
+      }
+    },
+
     clearHistory: () => set({ history: [] }),
 
     removeFromQueue: (i) => {
@@ -338,6 +417,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     clearQueue: () => {
       try {
+        clearQualityResume();
         a().pause();
         a().removeAttribute("src");
       } catch {
@@ -363,6 +443,15 @@ export const usePlayer = create<PlayerState>((set, get) => {
         startSong(index);
       }
       return result;
+    },
+
+    replaceCurrent: (song) => {
+      const { queue, index } = get();
+      if (index < 0 || index >= queue.length) return;
+      const nextQueue = [...queue];
+      nextQueue[index] = song;
+      set({ queue: nextQueue });
+      startSong(index);
     },
   };
 });

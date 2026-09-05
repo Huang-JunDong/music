@@ -1,6 +1,9 @@
 node_modules/
 .ref/
-data/
+# data/ 运行时目录整体忽略，仅例外以下随仓库分发的数据表
+# 中国 IP 段表（netease 随机国内 IP；更新：node scripts/gen-china-ip-ranges.mjs）
+data/*
+!data/china_ip_ranges.txt
 .next/
 out/
 *.tsbuildinfo

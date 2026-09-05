@@ -1,4 +1,4 @@
-import type { Song } from "./types";
+import type { Song, SongQuality } from "./types";
 
 /** 可播性检查结果（前端状态，/api/inspect） */
 export interface StreamInfo {
@@ -26,16 +26,17 @@ export function songParams(song: Song): URLSearchParams {
   return p;
 }
 
-/** /api/download 音频流代理地址（<audio> 播放与下载共用，对齐 Go /download） */
-export function downloadUrl(song: Song, download = false): string {
+/** /api/download 音频流代理地址（<audio> 播放与下载共用，对齐 Go /download）；quality 为音质偏好（best=默认不传） */
+export function downloadUrl(song: Song, download = false, quality?: SongQuality): string {
   const p = songParams(song);
   if (download) p.set("download", "1");
+  if (quality && quality !== "best") p.set("quality", quality);
   return `/api/download?${p.toString()}`;
 }
 
 /** 兼容别名：播放地址（stream=1：流式播放，不走并行分块/落盘/嵌入/WebDAV 缓冲） */
-export function streamUrl(song: Song): string {
-  return `${downloadUrl(song)}&stream=1`;
+export function streamUrl(song: Song, quality?: SongQuality): string {
+  return `${downloadUrl(song, false, quality)}&stream=1`;
 }
 
 /** /api/inspect 可播性探测地址 */

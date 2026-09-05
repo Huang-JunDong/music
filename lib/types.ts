@@ -82,6 +82,22 @@ export interface PlaylistDetail {
 }
 
 /**
+ * 播放/下载音质偏好 — 跨源统一抽象（QQ 七档阶梯 / 网易 level 的归一化）：
+ * - standard：标准 128k（省流量）
+ * - high：较高 320k 封顶
+ * - lossless：无损 FLAC 封顶
+ * - best：最高档自动降级（默认，等价于不传）
+ * provider 各自映射档位；不支持档位选择的源忽略该参数。
+ */
+export type SongQuality = "standard" | "high" | "lossless" | "best";
+
+/** quality 参数清洗：非法值归一为 undefined（= best 默认行为） */
+export function normalizeSongQuality(value: unknown): SongQuality | undefined {
+  const v = String(value ?? "").trim().toLowerCase();
+  return v === "standard" || v === "high" || v === "lossless" || v === "best" ? v : undefined;
+}
+
+/**
  * Provider 完整契约 — 对齐 music-lib/provider/interface.go 的 FullMusicProvider。
  * 可选能力用 `?` 表达：不支持时保持 undefined，路由层据此返回“该源不支持”。
  */
@@ -94,8 +110,8 @@ export interface MusicProvider {
   search(keyword: string): Promise<Song[]>;
   /** SongParser（单曲分享链接 → Song） */
   parse?(link: string): Promise<Song>;
-  /** SongDownloader：返回可直接请求的音频直链 */
-  getStreamUrl(song: Song): Promise<string>;
+  /** SongDownloader：返回可直接请求的音频直链（quality 为音质偏好，源不支持时忽略） */
+  getStreamUrl(song: Song, quality?: SongQuality): Promise<string>;
   /** LyricProvider：返回 LRC 文本 */
   getLyric?(song: Song): Promise<string>;
   /** AlbumProvider */

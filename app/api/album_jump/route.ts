@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider } from "@/lib/registry";
 import { pickBestAlbumMatch } from "@/lib/song-meta";
 
@@ -9,7 +10,9 @@ export const dynamic = "force-dynamic";
  * GET /api/album_jump?name=&artist=&source=
  * 搜索专辑 → pickBestAlbumMatch → 302 到 /album?id=&source=
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const name = (params.get("name") ?? "").trim();
   const artist = (params.get("artist") ?? "").trim();

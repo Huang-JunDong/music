@@ -58,7 +58,8 @@ function loadChinaIPRanges(): IPRange[] & { totalCount?: number } {
     arr.totalCount = total;
     return arr;
   } catch (e) {
-    logger.error("Failed to load china_ip_ranges.txt:", (e as Error).message);
+    /* 文件缺失/损坏不阻断：generateRandomChineseIP 走内置 116.x 前缀兜底 */
+    logger.warn("china_ip_ranges.txt unavailable, fallback to built-in prefixes:", (e as Error).message);
     const arr: IPRange[] & { totalCount?: number } = [] as any;
     arr.totalCount = 0;
     return arr;
@@ -85,10 +86,17 @@ export function cookieToJson(cookie: string | undefined | null): Record<string, 
   if (!cookie) return {};
   const obj: Record<string, string> = {};
   for (const item of cookie.split(";")) {
-    const arr = item.split("=");
-    if (arr.length === 2) {
-      obj[arr[0].trim()] = arr[1].trim();
-    }
+    /* indexOf 语义（对齐 lib/qq/client.ts / lib/http.ts）：值本身可含 "="
+     * （base64 padding，如 MUSIC_U=abc==），split("=")+length===2 会整条丢弃 */
+    const eq = item.indexOf("=");
+    if (eq <= 0) continue;
+    const key = item.slice(0, eq).trim();
+    const val = item.slice(eq + 1).trim();
+    if (!key) continue;
+    /* 输入可能来自 Set-Cookie 数组 join 的串（登录接口）：同名 cookie 出现
+       "有效值 + 空值删除指令"时，空值不得覆盖已捕获的有效值（同 lib/qq/client.ts 修复） */
+    if (!val && obj[key]) continue;
+    obj[key] = val;
   }
   return obj;
 }

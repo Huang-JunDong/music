@@ -177,6 +177,11 @@ export function responseCookies(resp: Response): Record<string, string> {
     if (eq <= 0) continue;
     const name = pair.slice(0, eq).trim();
     const value = pair.slice(eq + 1).trim();
+    /* 同名多域 Set-Cookie：上游（passport/ptlogin2 系）会对同一 cookie 名同时下发
+       "有效值 + 删除指令（空值 + Expires=1970，清理另一 Domain 的旧 cookie）"，
+       空值删除条目不得覆盖已捕获的有效值（否则扫码登录关键 cookie 丢失 → 502，
+       同 lib/qq/client.ts raw() 的修复） */
+    if (!value && cookies[name]) continue;
     if (name) cookies[name] = value;
   }
   return cookies;

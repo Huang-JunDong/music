@@ -1,0 +1,2 @@
+# 生成类数据文件统一 LF（scripts/gen-china-ip-ranges.mjs 输出 \n，避免 autocrlf 全量 diff）
+data/china_ip_ranges.txt text eol=lf

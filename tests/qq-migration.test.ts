@@ -29,6 +29,14 @@ import {
 import { parseCgiResponse, QQClient, type GatherRequest } from "../lib/qq/client";
 import { isCredentialExpired, emptyCredential } from "../lib/qq/credential";
 import { getLyric, getMultiStyleTransLyric } from "../lib/qq/modules/lyric";
+import { qq } from "../lib/providers/qq";
+import type { Song } from "../lib/types";
+
+/* getStreamUrl 音质测试：隔离全局凭证（真实库中存在已登录凭证时 provider 会触发 VIP 网络探测） */
+vi.mock("../lib/qq/credential", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../lib/qq/credential")>();
+  return { ...mod, loadCredential: () => null };
+});
 
 describe("封面 URL 体系", () => {
   it("六档尺寸 + T001/T002", () => {
@@ -277,7 +285,9 @@ describe("gather 批量合并", () => {
   });
 
   it("requireLogin 缺凭证：returnExceptions 收集异常而不抛出", async () => {
-    const client = new QQClient({ platform: "web", credential: null });
+    /* 显式空凭证：不依赖全局库状态（credential:null 会落构造函数 ?? 兜底读 SQLite，
+       全局凭证有效时本用例会翻转为 CgiApiError 并发起真实网络请求） */
+    const client = new QQClient({ platform: "web", credential: emptyCredential() });
     const results = await client.gather(
       [{ kind: "cgi", module: "m", method: "x", param: {}, options: { requireLogin: true } }],
       { returnExceptions: true },
@@ -316,4 +326,118 @@ describe("歌词自动解密", () => {
     expect(result.lyrics[0].lyric).toBe("xx"); // 非 hex 密文保留原值
     expect(result.lyrics[1].styleName).toBe("t");
   });
+});
+
+describe("raw() 同名多域 Set-Cookie 解析（扫码登录 check_sig p_skey 回归）", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  /** 用多条 set-cookie 头构造响应并跑 raw() */
+  async function rawWith(setCookieLines: string[]): Promise<Record<string, string>> {
+    globalThis.fetch = (async () =>
+      new Response("", {
+        status: 302,
+        headers: setCookieLines.map((v) => ["set-cookie", v]) as [string, string][],
+      })) as typeof fetch;
+    const client = new QQClient({ platform: "web" });
+    const res = await client.raw({ method: "GET", url: "https://example.com/" });
+    return res.cookies;
+  }
+
+  it("有效值在前、空值删除指令在后（QQ check_sig 实测顺序）：保留有效值", async () => {
+    const cookies = await rawWith([
+      "p_uin=o123;Path=/;Domain=graph.qq.com",
+      "p_skey=VALID;Path=/;Domain=graph.qq.com;Secure",
+      "p_uin=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+      "p_skey=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+    ]);
+    expect(cookies.p_skey).toBe("VALID");
+    expect(cookies.p_uin).toBe("o123");
+  });
+
+  it("删除指令在前、有效值在后（QQ check_sig 的 pt2gguin 顺序）：保留有效值", async () => {
+    const cookies = await rawWith([
+      "pt2gguin=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+      "pt2gguin=o123;Expires=Tue, 19 Jan 2038 03:14:07 GMT;Path=/;Domain=ptlogin2.qq.com;Secure",
+    ]);
+    expect(cookies.pt2gguin).toBe("o123");
+  });
+
+  it("仅有删除指令时保留空值（清除语义不变）；不同名互不影响", async () => {
+    const cookies = await rawWith(["a=1;Path=/", "b=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/"]);
+    expect(cookies.a).toBe("1");
+    expect(cookies.b).toBe("");
+  });
+});
+
+describe("getStreamUrl 音质偏好（QQ 阶梯截断）", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  /** mock musicu.fcg：捕获请求的 filename 档位，逐档返回 purl（unavailable 前缀档位返回空 purl 模拟不可用） */
+  function mockVkey(unavailablePrefixes: string[] = []) {
+    let capturedFilenames: string[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      capturedFilenames = (body.req_0?.param?.filename ?? []) as string[];
+      return new Response(
+        JSON.stringify({
+          req_0: {
+            code: 0,
+            data: {
+              midurlinfo: capturedFilenames.map((f) => ({
+                filename: f,
+                purl: unavailablePrefixes.some((p) => f.startsWith(p)) ? "" : `purl-${f.slice(0, 4)}`,
+              })),
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    return () => capturedFilenames;
+  }
+
+  it("默认（best/不传）：非 VIP 请求 320+128 两档，取 320 优先", async () => {
+    const cap = mockVkey();
+    const url = await qq.getStreamUrl({ ...baseSong() });
+    expect(cap().map((f) => f.slice(0, 4))).toEqual(["M800", "M500"]);
+    expect(url).toContain("purl-M800");
+  });
+
+  it("standard：仅请求 128k 档", async () => {
+    const cap = mockVkey();
+    const url = await qq.getStreamUrl({ ...baseSong() }, "standard");
+    expect(cap().map((f) => f.slice(0, 4))).toEqual(["M500"]);
+    expect(url).toContain("purl-M500");
+  });
+
+  it("high：请求 320+128 档（不可用自动降级到 128）", async () => {
+    /* mock：M800 无 purl（该档不可用）→ 应回落到 M500 */
+    const cap = mockVkey(["M800"]);
+    const url = await qq.getStreamUrl({ ...baseSong() }, "high");
+    expect(cap().map((f) => f.slice(0, 4))).toEqual(["M800", "M500"]);
+    expect(url).toContain("purl-M500");
+  });
+
+  function baseSong() {
+    return {
+      source: "qq",
+      id: "004YZbkL2MNHoY",
+      name: "t",
+      artist: "a",
+      album: "",
+      duration: 1,
+      size: 0,
+      bitrate: 0,
+      cover: "",
+      link: "",
+    } as Song;
+  }
 });

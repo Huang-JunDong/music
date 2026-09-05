@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, songFromParams } from "@/lib/registry";
+import { normalizeSongQuality } from "@/lib/types";
 import { fetchSource, formatSizeMB } from "@/lib/web-core";
 import { isLocalMusicSource, localMusicTrackByID, trackAbsPath } from "@/lib/local-music";
 import fs from "node:fs";
@@ -11,7 +13,9 @@ export const dynamic = "force-dynamic";
  * GET /api/inspect?id=&source=&duration=&extra=
  * 可播性探测：Range bytes=0-1 请求上游（5s 超时），解析 Content-Range 得大小与码率。
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const id = params.get("id") ?? "";
   const source = params.get("source") ?? "";
@@ -56,7 +60,8 @@ export async function GET(req: NextRequest) {
 
   let url = "";
   try {
-    url = await provider.getStreamUrl({ ...song, id, source });
+    /* quality 透传：播放页 Range 探测须与实际播放档位一致（切 128K 后探测的应是 128K 码率） */
+    url = await provider.getStreamUrl({ ...song, id, source }, normalizeSongQuality(params.get("quality")));
     if (!url) return NextResponse.json({ valid: false });
   } catch {
     return NextResponse.json({ valid: false });

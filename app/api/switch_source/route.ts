@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { findBestSwitchSong } from "@/lib/switch-source";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** GET /api/switch_source?name=&artist=&source=&target=&duration= — 匹配算法见 lib/switch-source.ts（审核整改 A-26 下沉） */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const name = (params.get("name") ?? "").trim();
   const artist = (params.get("artist") ?? "").trim();

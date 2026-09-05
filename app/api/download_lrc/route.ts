@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, songFromParams } from "@/lib/registry";
 import { downloadDisposition } from "@/lib/web-core";
 import { classifyLyricFormat, formatLyricForMode } from "@/lib/lyrics-format";
@@ -85,10 +86,5 @@ async function handle(req: NextRequest): Promise<NextResponse> {
   });
 }
 
-export async function GET(req: NextRequest) {
-  return handle(req);
-}
-
-export async function POST(req: NextRequest) {
-  return handle(req);
-}
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, handle);
+export const POST = (req: NextRequest) => withBrowserSourceSession(req, handle);

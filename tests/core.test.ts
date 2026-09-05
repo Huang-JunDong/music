@@ -10,6 +10,8 @@ import { detectExtBySignature, parseContentRangeTotal } from "../lib/range-fetch
 import { detectAudioExtBySignature, sanitizeDownloadRelativePath } from "../lib/download-flow";
 import { normalizeWebSettings, defaultWebSettings } from "../lib/store";
 import { CalcSongSimilarity, IsDurationClose } from "../lib/similarity";
+import { responseCookies } from "../lib/http";
+import { cookieToJson } from "../lib/netease/utils";
 
 describe("songKey（Go SongKey：artist - name，保留大小写）", () => {
   it("基本拼接与空值回退 Unknown", () => {
@@ -178,5 +180,47 @@ describe("相似度（Go CalcSongSimilarity/IsDurationClose 常量）", () => {
     expect(IsDurationClose(200, 220)).toBe(true); // diff=20 ≤ max(10, 200*0.15=30)
     expect(IsDurationClose(200, 250)).toBe(false); // diff=50 > 30
     expect(IsDurationClose(0, 999)).toBe(true);
+  });
+});
+
+describe("同名多域 Set-Cookie 解析（扫码登录关键 cookie 回归）", () => {
+  /** 用多条 set-cookie 头构造 Response */
+  function respWith(lines: string[]): Response {
+    return new Response("", {
+      status: 302,
+      headers: lines.map((v) => ["set-cookie", v]) as [string, string][],
+    });
+  }
+
+  it("responseCookies：有效值在前、空值删除指令在后 → 保留有效值", () => {
+    const cookies = responseCookies(
+      respWith([
+        "p_uin=o123;Path=/;Domain=graph.qq.com",
+        "p_skey=VALID;Path=/;Domain=graph.qq.com;Secure",
+        "p_uin=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+        "p_skey=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+      ]),
+    );
+    expect(cookies.p_skey).toBe("VALID");
+    expect(cookies.p_uin).toBe("o123");
+  });
+
+  it("responseCookies：删除指令在前、有效值在后 → 保留有效值；仅删除时保留空值", () => {
+    const cookies = responseCookies(
+      respWith([
+        "pt2gguin=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/;Domain=qq.com",
+        "pt2gguin=o123;Path=/;Domain=ptlogin2.qq.com",
+        "b=;Expires=Thu, 01 Jan 1970 00:00:00 GMT;Path=/",
+      ]),
+    );
+    expect(cookies.pt2gguin).toBe("o123");
+    expect(cookies.b).toBe("");
+  });
+
+  it("cookieToJson：数组 join 串中同名空值不覆盖有效值", () => {
+    expect(cookieToJson("MUSIC_U=token-abc; Path=/; _ntes_nuid=; MUSIC_U=")).toMatchObject({
+      MUSIC_U: "token-abc",
+      _ntes_nuid: "",
+    });
   });
 });

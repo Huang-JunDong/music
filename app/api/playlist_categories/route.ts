@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, GetPlaylistCategorySourceNames, GetSourceDescription } from "@/lib/registry";
 import { sourcesFromQuery } from "@/lib/web-core";
 import type { PlaylistCategory } from "@/lib/types";
@@ -33,7 +34,9 @@ function categoryPlaylistsURL(source: string, category: PlaylistCategory): strin
  * 对齐 Go loadPlaylistCategoryPageSources：失败源不出现在 views 中，
  * 全部失败 → "没有可展示的歌单分类"；部分失败 → "部分来源分类加载失败：…"
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const sources = playlistCategorySourcesFromQuery(req.nextUrl.searchParams);
 
   const results = await Promise.allSettled(

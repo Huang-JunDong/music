@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider } from "@/lib/registry";
 import { fetchSource } from "@/lib/web-core";
 import { cleanupSession, renderVideo, takeSession } from "@/lib/videogen";
@@ -12,7 +13,9 @@ export const dynamic = "force-dynamic";
  * 无 ffmpeg → 501 {"error":"ffmpeg unavailable"}；成功 → {url}
  * 免登录（CSRF 写守卫保留；触发 ffmpeg 渲染与产物落盘）。
  */
-export async function POST(req: NextRequest) {
+export const POST = (req: NextRequest) => withBrowserSourceSession(req, postHandler);
+
+async function postHandler(req: NextRequest) {
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
   let body: { session_id?: string; name?: string };

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, GetSourceDescription } from "@/lib/registry";
 import { filterAvailableSources, RECOMMEND_SOURCE_NAMES, sourcesFromQuery } from "@/lib/web-core";
 import type { Playlist } from "@/lib/types";
@@ -11,7 +12,9 @@ export const dynamic = "force-dynamic";
  * 汇总 error 对齐 Go loadPlaylistSourceTabs：
  * 全部失败 → "全部来源加载失败：a、b"；部分失败 → "部分来源加载失败：a、b"
  */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const sources = filterAvailableSources(
     sourcesFromQuery(req.nextUrl.searchParams),
     RECOMMEND_SOURCE_NAMES,

@@ -8,16 +8,26 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
-  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2,
+  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode,
+  type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { usePlayer, bindAudioEvents, bindSpaceToggle } from "@/lib/client/store";
 import { PlayerBar } from "@/components/player/player-bar";
 import { FloatingToolbar } from "@/components/floating-toolbar";
 import { apiAuthStatus, apiLogout } from "@/lib/client/api";
 import { toast } from "sonner";
 
-const NAV = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  match: (p: string) => boolean;
+  /** 分组标题：菜单 >7 项时按职能分组，降低扫描成本（组名渲染为小节标题） */
+  group?: string;
+}
+
+const NAV: NavItem[] = [
   /* /playlist 主入口是歌单广场的三处网格（推荐/分类/收藏）→ 归「歌单广场」；
      /album 主入口是首页专辑结果与歌曲行专辑链接 → 归「搜索」 */
   { href: "/", label: "搜索", icon: Search, match: (p: string) => p === "/" || p.startsWith("/album") },
@@ -26,8 +36,9 @@ const NAV = [
   { href: "/local", label: "本地音乐", icon: HardDrive, match: (p: string) => p.startsWith("/local") },
   { href: "/downloads", label: "下载记录", icon: History, match: (p: string) => p.startsWith("/downloads") },
   { href: "/render", label: "视频渲染", icon: Clapperboard, match: (p: string) => p.startsWith("/render") },
-  { href: "/netease", label: "网易 API", icon: Terminal, match: (p: string) => p.startsWith("/netease") },
-  { href: "/qq", label: "QQ API", icon: Music2, match: (p: string) => p.startsWith("/qq") },
+  { href: "/accounts", label: "我的音源账号", icon: QrCode, match: (p: string) => p.startsWith("/accounts"), group: "音源与 API" },
+  { href: "/netease", label: "网易 API", icon: Terminal, match: (p: string) => p.startsWith("/netease"), group: "音源与 API" },
+  { href: "/qq", label: "QQ API", icon: Music2, match: (p: string) => p.startsWith("/qq"), group: "音源与 API" },
   { href: "/settings", label: "设置", icon: Settings, match: (p: string) => p.startsWith("/settings") },
 ];
 
@@ -52,28 +63,35 @@ function NavItems({ pillLayoutId }: { pillLayoutId: string }) {
   const pathname = usePathname() ?? "/";
   return (
     <nav className="flex flex-col gap-1" aria-label="主导航">
-      {NAV.map((item) => {
+      {NAV.map((item, i) => {
         const active = item.match(pathname);
         const Icon = item.icon;
+        const showGroup = !!item.group && NAV[i - 1]?.group !== item.group;
         return (
-          <Link
-            key={item.href}
-            href={item.href}
-            aria-current={active ? "page" : undefined}
-            className={`relative flex min-h-[44px] items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors duration-200 ${
-              active ? "text-white" : "text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]"
-            }`}
-          >
-            {active && (
-              <motion.span
-                layoutId={pillLayoutId}
-                className="absolute inset-0 rounded-xl bg-gradient-to-r from-violet-500/20 to-fuchsia-500/15 ring-1 ring-violet-400/25"
-                transition={{ type: "spring", stiffness: 420, damping: 34 }}
-              />
+          <Fragment key={item.href}>
+            {showGroup && (
+              <div className="mt-3 px-3 pb-1 text-[11px] font-semibold tracking-[0.14em] text-zinc-600">
+                {item.group}
+              </div>
             )}
-            <Icon className="h-[18px] w-[18px]" strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
-            <span>{item.label}</span>
-          </Link>
+            <Link
+              href={item.href}
+              aria-current={active ? "page" : undefined}
+              className={`relative flex min-h-[44px] items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors duration-200 ${
+                active ? "text-white" : "text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]"
+              }`}
+            >
+              {active && (
+                <motion.span
+                  layoutId={pillLayoutId}
+                  className="absolute inset-0 rounded-xl bg-gradient-to-r from-violet-500/20 to-fuchsia-500/15 ring-1 ring-violet-400/25"
+                  transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                />
+              )}
+              <Icon className="h-[18px] w-[18px]" strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
+              <span>{item.label}</span>
+            </Link>
+          </Fragment>
         );
       })}
     </nav>

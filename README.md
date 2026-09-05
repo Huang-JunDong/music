@@ -1,7 +1,7 @@
 # Music — 全网音乐聚合搜索 / 试听 / 下载
 
 基于 **Next.js 15 全栈**（App Router + Route Handlers + TypeScript）实现的音乐聚合应用。
-后端接口从 [go-music-dl](https://github.com/guohuiyuan/go-music-dl)（及其音源库 [music-lib](https://github.com/guohuiyuan/music-lib)）**完整迁移为 TypeScript，45 条 API 与 Go 版一一对应**，支持 13 家音源、歌单/专辑/链接解析、扫码登录、管理员鉴权、本地音乐库。
+后端接口从 [go-music-dl](https://github.com/guohuiyuan/go-music-dl)（及其音源库 [music-lib](https://github.com/guohuiyuan/music-lib)）**完整迁移为 TypeScript，45 条 API 与 Go 版一一对应**，支持 13 家音源、歌单/专辑/链接解析、扫码登录（多用户：每个访客可登录自己的账号，凭证存浏览器）、管理员鉴权、本地音乐库。
 
 ## 技术栈
 
@@ -13,7 +13,7 @@
 | 存储 | better-sqlite3（歌单 / 下载记录 / 去重 / Cookie / 本地音乐索引 / 设置）+ music-metadata（音频元数据，等价 Go tag+ffprobe 职责） |
 | 媒体 | ffmpeg（PATH → `MUSIC_DL_FFMPEG` → **ffmpeg-static 内置二进制** 三级解析，元数据嵌入与视频合成开箱即用） |
 | 加密 | Node 内置 crypto（网易云 weapi/eapi/linuxapi/**xeapi** 五通道全量、QQ QRC 变体 3DES、酷狗 KRC、酷我 zlib+XOR+GB18030、汽水 PlayAuth/CENC 解密等） |
-| 测试 | vitest（129 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度 / **网易云 439 接口注册表完整性** / **QQ 音乐 105 接口路由表 + 响应映射完整性**） |
+| 测试 | vitest（159 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度 / **网易云 439 接口注册表完整性** / **QQ 音乐 105 接口路由表 + 响应映射完整性** / **音源会话凭证解析与写分流 / netease 代理显式 cookie 写库守卫 / qr-login 凭证组装**） |
 
 ## 音源支持矩阵（13 源）
 
@@ -50,14 +50,14 @@
 | `GET /user_playlists` | `GET /api/user_playlists` | 我的收藏歌单（需 Cookie） |
 | `GET /playlist_categories` | `GET /api/playlist_categories` | 歌单分类（分组结构） |
 | `GET /category_playlists` | `GET /api/category_playlists` | 分类下歌单 |
-| `GET /inspect` | `GET /api/inspect` | 可播性探测（Range:0-1，大小/码率） |
-| `GET /switch_source` | `GET /api/switch_source` | 跨源换源（相似度+时长+可播验证） |
-| `GET/POST /download` | `GET/POST /api/download` | 音频流代理（Range 206 透传 / `embed=1` 元数据嵌入 / `save_local=1` 落盘去重 / WebDAV 上传 / 汽水服务端解密 / 本地 304 协商缓存） |
+| `GET /inspect` | `GET /api/inspect` | 可播性探测（Range:0-1，大小/码率；`quality` 透传档位探测） |
+| `GET /switch_source` | `GET /api/switch_source` | 跨源换源（相似度+时长+可播验证；`target` 定向到指定源） |
+| `GET/POST /download` | `GET/POST /api/download` | 音频流代理（Range 206 透传 / `embed=1` 元数据嵌入 / `save_local=1` 落盘去重 / WebDAV 上传 / 汽水服务端解密 / 本地 304 协商缓存 / `quality=standard·high·lossless·best` 播放音质偏好，QQ 阶梯截断+网易 level 映射，不支持档位选择的源忽略） |
 | `GET/POST /download_lrc` | `GET/POST /api/download_lrc` | 歌词下载（X-Lyric-Format；`save_local=1` 落盘） |
 | `GET/POST /download_cover` | `GET/POST /api/download_cover` | 封面下载 |
 | `GET /cover_proxy` | `GET /api/cover_proxy` | 封面代理（绕防盗链） |
 | `GET /lyric` | `GET /api/lyric` | 歌词（LRC，含译文） |
-| `POST/GET /qr_login/:source` | `POST/GET /api/qr_login/[source]` | 扫码登录（创建/轮询，成功自动存 Cookie） |
+| `POST/GET /qr_login/:source` | `POST/GET/DELETE /api/qr_login/[source]` | 扫码登录（创建/轮询/退出浏览器会话；`?status=1` 查登录态。多用户：访客凭证经 HttpOnly Cookie `music_dl_src_<source>` 存本浏览器（90 天），管理员额外写服务端全局存储。**Breaking**：轮询成功响应不再返回 `cookie`/`cookies` 字段——凭证统一经 HttpOnly Set-Cookie 下发/服务端写库，不经前端） |
 | `GET /collections` 系列 11 条 | `/api/collections*` | 本地歌单 CRUD / 导入 / 批量收藏 / 删除曲目 |
 | `POST /collections/:id/local_music(/batch)` | 同路径 | 本地音乐加入歌单 |
 | `GET/DELETE /local_music` | `GET/DELETE /api/local_music` | 本地库扫描（分页/刷新/已收藏标记）/硬删除 |
@@ -102,6 +102,7 @@
 
 - **聚合搜索**：单曲/歌单/专辑三种类型 + 13 源多选筛选 + 分享链接自动识别解析
 - **歌单广场**：每日推荐 / 分类浏览 / 我的收藏（Cookie 源）
+- **我的音源账号**（`/accounts`）：多用户——每个访客扫码登录"自己的"网易云 / QQ（含微信通道）/ 酷狗账号，凭证仅存本浏览器（HttpOnly，90 天），搜索 / 歌单 / 下载音质 / VIP 解析全站自动走自己的凭证，与服务器全局配置互不影响；服务端各音源路由经请求级会话（`lib/source-session.ts` + `lib/cookies.ts`）使浏览器凭证优先，进程内缓存按凭证指纹隔离防跨账号回放
 - **我的歌单**：自建歌单 CRUD、外部歌单/专辑导入、单曲/批量收藏、本地音乐入库
 - **本地音乐**：扫描/上传/删除/重复检测/播放缓存，内嵌封面与歌词自动读取
 - **播放器**：全局播放条 + 全屏播放页（**卡拉 OK 逐字高亮**：网易云 YRC / QQ QRC / 酷狗 KRC 词级歌词逐词渐变着色 + 罗马音/译文副行，其他渠道行级渐变；点击跳播）、**Range 实测音质徽章**（码率·大小）、队列管理、随机/循环、空格键控制、MediaSession（系统媒体键/锁屏控制）、失效自动换源
@@ -114,7 +115,7 @@
 ```bash
 npm install
 npm run dev        # 开发模式（Turbopack），打开 http://localhost:3000
-npm test           # 运行 129 例单元测试（vitest）
+npm test           # 运行 159 例单元测试（vitest）
 ```
 
 生产模式：
@@ -129,12 +130,14 @@ npm run build && npm start
 
 **鉴权**：默认开启（首启在终端打印 setup token，访问 `/login` 初始化管理员）；单机自托管可设 `MUSIC_DL_DISABLE_AUTH=1` 跳过（等价 Go 桌面模式）。
 
+**反向代理与限流**：生产（对外）部署请置于可信反向代理（nginx/caddy 等）之后，由代理**覆写** `X-Forwarded-For` / `X-Forwarded-Proto`——服务端限流（`qr_login` 创建 10 次/分钟、轮询 120 次/分钟等按 IP 维度）与凭证 Cookie 的 `Secure` 属性均依赖这两个头；无代理直连暴露时，客户端可伪造 `X-Forwarded-For` 绕过 IP 限流。多级代理下取首段左侧为不可信、末段右侧由最近代理附加，须在代理层截断/覆写不可信值。
+
 ## 目录结构
 
 ```
 ├── app/
 │   ├── page.tsx                 # 搜索首页（聚合搜索/链接解析）
-│   ├── explore|collections|collection|local|settings|playlist|album/
+│   ├── explore|collections|collection|local|settings|playlist|album|accounts/
 │   ├── template.tsx             # 页面过渡动画
 │   └── api/                     # 42 条 Route Handlers（与 Go 一一对应）
 ├── components/
@@ -150,6 +153,7 @@ npm run build && npm start
 │   ├── range-fetch.ts           # 并行分块下载（32KB 首块+256KB×16 并发+短读校验）
 │   ├── lyrics.ts                # 歌词管线（LRC/YRC/KRC 多语言→verbatim 输出）
 │   ├── write-guard.ts           # save_local 写保护（POST+XHR+同源）
+│   ├── source-session.ts        # 浏览器级音源凭证会话（music_dl_src_* Cookie / 路由统一包装）
 │   ├── cookies.ts similarity.ts local-music.ts web-core.ts
 │   ├── crypto.ts qrc.ts soda-crypto.ts
 │   ├── netease/                 # api-enhanced 全量移植：五通道加密运行时 + 439 接口模块 + 注册表

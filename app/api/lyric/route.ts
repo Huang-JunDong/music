@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, songFromParams } from "@/lib/registry";
 import { classifyLyricFormat, formatLyricForMode } from "@/lib/lyrics-format";
 import { isLocalMusicSource, localMusicTrackByID, readLocalMusicLyrics } from "@/lib/local-music";
@@ -14,7 +15,9 @@ const TEXT_HEADERS = {
 const FALLBACK_LRC = "[00:00.00] 纯音乐 / 无歌词";
 
 /** GET /api/lyric?source=&id=&format= → LRC 文本（无歌词兜底纯音乐占位） */
-export async function GET(req: NextRequest) {
+export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
+
+async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const song = songFromParams(params);
 

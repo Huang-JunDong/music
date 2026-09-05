@@ -319,7 +319,14 @@ export class QQClient {
     for (const line of rawCookies) {
       const [pair] = line.split(";");
       const idx = pair.indexOf("=");
-      if (idx > 0) setCookies[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+      if (idx <= 0) continue;
+      const name = pair.slice(0, idx).trim();
+      const value = pair.slice(idx + 1).trim();
+      /* 同名多域 Set-Cookie：上游（QQ ptlogin2 check_sig）会对同一 cookie 名同时下发
+         "有效值（Domain=graph.qq.com）+ 删除指令（空值 + Expires=1970，Domain=qq.com）"，
+         空值删除条目不得覆盖已捕获的有效值（否则扫码登录 p_skey 丢失 → 502） */
+      if (!value && setCookies[name]) continue;
+      setCookies[name] = value;
     }
 
     const buffer = new Uint8Array(await res.arrayBuffer());

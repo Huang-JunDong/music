@@ -12,6 +12,7 @@ import type {
   QRLoginSession,
   QRLoginStatus,
   Song,
+  SongQuality,
 } from "../types";
 import { invokeNcm } from "../netease";
 import { createRequest } from "../netease/request";
@@ -54,8 +55,20 @@ async function isNeteaseVipAccount(): Promise<boolean> {
   }
 }
 
-/** extra 指定单曲级别，默认 lossless → hires → exhigh */
-function preferredDownloadLevels(song: Song): string[] {
+/** extra 指定单曲级别，默认 lossless → hires → exhigh；quality 偏好参数优先于 extra */
+function preferredDownloadLevels(song: Song, quality?: SongQuality): string[] {
+  switch (quality) {
+    case "standard":
+      return ["standard"];
+    case "high":
+      return ["exhigh"];
+    case "lossless":
+      return ["lossless"];
+    case "best":
+      return ["hires", "lossless", "exhigh"];
+    default:
+      break;
+  }
   const extra = song.extra ?? {};
   const level = (extra["netease_level"] ?? extra["level"] ?? "").trim().toLowerCase();
   if (["standard", "exhigh", "lossless", "hires"].includes(level)) return [level];
@@ -451,10 +464,10 @@ export const netease: MusicProvider = {
     return song;
   },
 
-  async getStreamUrl(song: Song): Promise<string> {
+  async getStreamUrl(song: Song, quality?: SongQuality): Promise<string> {
     const songId = song.extra?.song_id || song.id;
     const cookie = getCookie("netease");
-    const levels = preferredDownloadLevels(song);
+    const levels = preferredDownloadLevels(song, quality);
 
     // VIP eapi 高音质链（levels 逐级 + 10 分钟缓存）
     if (cookie.trim() && (await isNeteaseVipAccount())) {
@@ -480,9 +493,11 @@ export const netease: MusicProvider = {
     }
 
     // Fall back to the original weapi route（song/enhance/player/url）
-    const resp = await createRequest<{ data?: { url?: string; code?: number }[] }>(
+    // br 按音质偏好映射（standard=128k；其余 320k —— weapi 老接口无损不可靠，无损走 eapi 链路）
+    const br = quality === "standard" ? 128000 : 320000;
+    const resp = await createRequest<{ data?: { url?: string; code?: number; type?: string }[] }>(
       "/api/song/enhance/player/url",
-      { ids: [songId], br: 320000 },
+      { ids: [songId], br },
       {
         crypto: "weapi",
         cookie: cookieToJson(cookie),
@@ -495,11 +510,15 @@ export const netease: MusicProvider = {
         timeout: 0,
       },
     );
-    const url = resp.body.data?.[0]?.url;
+    const item = resp.body.data?.[0];
+    const url = item?.url;
     if (!url) throw new Error("netease: 未获取到播放链接（可能是 VIP / 版权受限）");
+    /* weapi 回退固定 mp3 码率档：缓存 ext 按实际格式（eapi 链路可能已把 song.ext 置为 flac，直接沿用会失真） */
+    const fallbackExt = normalizeNeteaseAudioType(item?.type ?? "", "exhigh") || "mp3";
+    if (!song.ext || song.ext === "flac") song.ext = fallbackExt;
     downloadURLCache.set(`${songId}:${levels.join(",")}:${md5hex(cookie)}`, {
       url,
-      ext: song.ext ?? "",
+      ext: fallbackExt,
       expiresAt: Date.now() + 10 * 60_000,
     });
     return url;

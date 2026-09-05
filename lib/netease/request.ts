@@ -196,10 +196,14 @@ export async function createRequest<T = any>(
     cookie = {};
   }
 
-  // 无登录态时惰性注册匿名 token（对齐 app.js 启动 generateConfig 行为）
-  if (!cookie.MUSIC_U && !getAnonymousToken()) {
+  // 无登录态时惰性注册匿名 token（对齐 app.js 启动 generateConfig 行为）。
+  // 注册接口自身必须跳过：注册请求在 token 就绪前会再次进入本分支 → 自引用
+  // ensureAnonymousToken（递归/风暴，历史上表现为 Maximum call stack size exceeded）。
+  if (uri !== "/api/register/anonimous" && !cookie.MUSIC_U && !getAnonymousToken()) {
     await ensureAnonymousToken((u, d, o) => createRequest(u, d, o as NcmRequestOption));
-    const processed = processCookieObject({ ...(options.cookie as any) || {} }, cryptoType);
+    /* 复用已归一的 cookie 变量（188-197 行）：直接展开 options.cookie 在其为字符串时
+       会产生 {"0":"M",...} 索引映射，污染 Cookie 头 */
+    const processed = processCookieObject({ ...cookie }, cryptoType);
     if (!processed.MUSIC_U) processed.MUSIC_A = getAnonymousToken();
     cookie = processed;
     headers["Cookie"] = cookieObjToString(cookie);

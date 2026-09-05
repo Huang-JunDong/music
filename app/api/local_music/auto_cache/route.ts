@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider } from "@/lib/registry";
 import { getWebSettings } from "@/lib/store";
 import { fetchSource } from "@/lib/web-core";
@@ -71,7 +72,9 @@ const AUTO_CACHE_MAX_REQUEST_BYTES = 64 * 1024;
  * 播放时后台缓存到下载目录；AutoCacheOnPlay 控制开关；64KB body 上限 + 单 JSON 文档校验；
  * 返回 started / skipped / busy / in_progress。
  */
-export async function POST(req: NextRequest) {
+export const POST = (req: NextRequest) => withBrowserSourceSession(req, postHandler);
+
+async function postHandler(req: NextRequest) {
   if (!allowSameOriginWrite(req)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
