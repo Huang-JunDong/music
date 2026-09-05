@@ -76,6 +76,30 @@ async function postJSON<T>(url: string, body?: unknown, method = "POST"): Promis
   return requestJSON<T>(url, method, body);
 }
 
+/**
+ * 通用控制台请求（审核整改 P3-07/P1-01：/netease、/qq API 控制台统一走此入口）：
+ * - 非 GET/HEAD 自动携带 X-Requested-With 头（服务端 checkWriteGuard CSRF 防护要求），body 为 JSON
+ * - 返回原始 Response 由调用方自行展示状态码/耗时（控制台不做 401 全局分流）
+ * - GET 不强制 no-store，保留 ETag/304 协商缓存（网关短缓存路由依赖）
+ */
+export function apiConsoleFetch(
+  url: string,
+  options: { method?: string; body?: unknown; cache?: RequestCache } = {},
+): Promise<Response> {
+  const method = options.method ?? "GET";
+  if (method === "GET" || method === "HEAD") {
+    return fetch(url, { method, ...(options.cache ? { cache: options.cache } : {}) });
+  }
+  return fetch(url, {
+    method,
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+  });
+}
+
 async function delJSON<T>(url: string, body?: unknown): Promise<T> {
   return requestJSON<T>(url, "DELETE", body);
 }

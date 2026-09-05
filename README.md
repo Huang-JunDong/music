@@ -13,7 +13,7 @@
 | 存储 | better-sqlite3（歌单 / 下载记录 / 去重 / Cookie / 本地音乐索引 / 设置）+ music-metadata（音频元数据，等价 Go tag+ffprobe 职责） |
 | 媒体 | ffmpeg（PATH → `MUSIC_DL_FFMPEG` → **ffmpeg-static 内置二进制** 三级解析，元数据嵌入与视频合成开箱即用） |
 | 加密 | Node 内置 crypto（网易云 weapi/eapi/linuxapi/**xeapi** 五通道全量、QQ QRC 变体 3DES、酷狗 KRC、酷我 zlib+XOR+GB18030、汽水 PlayAuth/CENC 解密等） |
-| 测试 | vitest（85 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度 / **网易云 439 接口注册表完整性**） |
+| 测试 | vitest（129 例：歌词 verbatim 管线 / SongKey / 文件名模板 / 签名探测 / mime 表 / 设置规范化 / 相似度 / **网易云 439 接口注册表完整性** / **QQ 音乐 105 接口路由表 + 响应映射完整性**） |
 
 ## 音源支持矩阵（13 源）
 
@@ -87,6 +87,17 @@
 - **Provider 降级耦合**：`lib/providers/netease.ts` 业务映射（Song/Playlist、VIP 判定缓存、下载直链缓存、链接解析、yrc 逐字歌词）全部保留，底层请求尽数改走新模块系统（`cloudsearch`/`song_detail`/`song_url_v1`/`lyric_new`/`album`/`playlist_detail`/`personalized`/`playlist_catlist`/`top_playlist`/`user_account`/`user_playlist`/`login_qr_*`）
 - 全量清单见 `docs/netease-api-inventory.md`（439 项 / 23 分类，含每个接口的 HTTP 路由与实现方式）
 
+## QQ 音乐 API 全量迁移（QQMusicApi）
+
+底层 QQ 音乐能力整体切换为 [L-1124/QQMusicApi](https://github.com/L-1124/QQMusicApi)（GPL-3.0，仅作技术可行性研究）的 **14 模块 105+ 接口全量 TypeScript 移植**，路径与参数命名与其 Web 路由层 1:1（snake_case），并补齐核心库有而 Web 层未暴露的能力（logout / 新碟 / 收藏专辑 / 红心歌曲 / MV 分类列表 / **私信 15 接口** / COS 上传 2 接口）：
+
+- **核心运行时** `lib/qq/`：CGI 统一网关（`musicu.fcg` / 签名 `musics.fcg`，zzc 签名 SHA1+XOR+base64）、三平台 comm 公共参数（Android 14.9.0.8 / Desktop / Web）、Android 虚拟设备指纹与 24h session（`music.getSession`）、QIMEI 申请（RSA+AES-CBC+MD5，缓存落盘 `data/qq_device.json`）、g_tk/hash33、错误码映射（2000 签名 / 2001 限流 / 1000·104400·104401 凭证过期）— 零第三方依赖
+- **MQTT 5.0 over WebSocket** `lib/qq/mqtt.ts`：undici WebSocket 精简实现（CONNECT 属性 / ServerReference 重定向 / 订阅 UserProperty / PUBLISH 属性解析），支撑**手机客户端扫码登录**推送通道
+- **接口模块** `lib/qq/modules/`：song(16) / album(5) / songlist(7) / search(5) / singer(10) / lyric(5) / mv(4) / top(2) / recommend(5) / comment(7) / user(19) / login(7·QQ/微信/手机三通道扫码+验证码) / private_message(15) / helper(2)
+- **统一入口**：`GET/POST/DELETE /api/qq/<route>`（如 `/api/qq/song/{mid}/url`、`/api/qq/login/qrcode/qq`），或进程内 `import { getClient } from "@/lib/qq"`；登录成功（扫码/验证码/刷新）自动把 Credential 写回 SQLite（与旧 cookie 键位双向兼容）；GET 按 60/300/600s 分级短缓存（LRU）
+- **前端控制台** `/qq`：14 模块接口分类浏览 / 实时搜索 / 在线调试；**路由 `{path_param}` 自动生成必填参数行**、GET·POST·DELETE 方法徽章、需登录接口 🔒 标记、状态码与耗时、JSON 响应复制
+- **Provider 重构**：`lib/providers/qq.ts` 旧私有实现（搜索/vkey/歌单/专辑/扫码约 2300 行）全部移除，MusicProvider 契约全部改走新模块（搜索 `DoSearchForQQMusicMobile`、直链 `UrlGetVkey` 七档降级、歌词 `GetPlayLyricInfo`）；**保留复用**：QRC 变体 3DES 解密管线（`lib/qrc.ts`）、分享链接解析、VIP 过滤与音质降级策略、虚拟歌单（我喜欢/目录歌单）、歌单分类广场（参考仓库无对应接口，属本项目特有）
+
 ## 前端功能
 
 - **聚合搜索**：单曲/歌单/专辑三种类型 + 13 源多选筛选 + 分享链接自动识别解析
@@ -94,7 +105,7 @@
 - **我的歌单**：自建歌单 CRUD、外部歌单/专辑导入、单曲/批量收藏、本地音乐入库
 - **本地音乐**：扫描/上传/删除/重复检测/播放缓存，内嵌封面与歌词自动读取
 - **播放器**：全局播放条 + 全屏播放页（**卡拉 OK 逐字高亮**：网易云 YRC / QQ QRC / 酷狗 KRC 词级歌词逐词渐变着色 + 罗马音/译文副行，其他渠道行级渐变；点击跳播）、**Range 实测音质徽章**（码率·大小）、队列管理、随机/循环、空格键控制、MediaSession（系统媒体键/锁屏控制）、失效自动换源
-- **API 控制台**（`/netease`）：网易云 439 接口分类浏览 / 实时搜索 / 在线调试（GET·POST、动态参数、状态码与耗时、JSON 响应复制）
+- **API 控制台**（`/netease`、`/qq`）：网易云 439 + QQ 音乐 105+ 接口分类浏览 / 实时搜索 / 在线调试（GET·POST·DELETE、路径参数自动填充、状态码与耗时、JSON 响应复制）
 - **设置**：扫码登录（网易云/QQ/酷狗/酷我/B站）、手动 Cookie、播放与下载选项（元数据嵌入 / 服务器落盘 / 并发数 / 文件名模板）、WebDAV 同步、GitHub 更新源与代理、下载记录
 - **双端适配**：PC 侧边栏布局 + 移动底部 Tab/mini 播放条，触控目标 ≥44px，动效遵循 `prefers-reduced-motion`
 
@@ -103,7 +114,7 @@
 ```bash
 npm install
 npm run dev        # 开发模式（Turbopack），打开 http://localhost:3000
-npm test           # 运行 85 例单元测试（vitest）
+npm test           # 运行 129 例单元测试（vitest）
 ```
 
 生产模式：

@@ -8,7 +8,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
-  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal,
+  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePlayer, bindAudioEvents, bindSpaceToggle } from "@/lib/client/store";
@@ -26,7 +26,8 @@ const NAV = [
   { href: "/local", label: "本地音乐", icon: HardDrive, match: (p: string) => p.startsWith("/local") },
   { href: "/downloads", label: "下载记录", icon: History, match: (p: string) => p.startsWith("/downloads") },
   { href: "/render", label: "视频渲染", icon: Clapperboard, match: (p: string) => p.startsWith("/render") },
-  { href: "/netease", label: "API 控制台", icon: Terminal, match: (p: string) => p.startsWith("/netease") },
+  { href: "/netease", label: "网易 API", icon: Terminal, match: (p: string) => p.startsWith("/netease") },
+  { href: "/qq", label: "QQ API", icon: Music2, match: (p: string) => p.startsWith("/qq") },
   { href: "/settings", label: "设置", icon: Settings, match: (p: string) => p.startsWith("/settings") },
 ];
 
