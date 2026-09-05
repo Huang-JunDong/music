@@ -238,20 +238,7 @@ export default function QQConsolePage() {
       <PageHeader
         icon={Music2}
         title="QQ 音乐 API 控制台"
-        subtitle={
-          <>
-            迁移自{" "}
-            <a
-              href="https://github.com/L-1124/QQMusicApi"
-              target="_blank"
-              rel="noreferrer"
-              className="text-zinc-400 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-200"
-            >
-              QQMusicApi
-            </a>{" "}
-            · 14 模块全量接口 · 登录态自动注入（扫码/验证码成功即写入）
-          </>
-        }
+        subtitle="14 模块全量接口 · 登录态自动注入（扫码/验证码成功即写入）"
         actions={
           <div className="flex items-center gap-2 text-[12px]">
             <span className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-zinc-300">
@@ -597,7 +584,7 @@ function CategoryButton({
         active ? "bg-emerald-500/15 font-semibold text-zinc-100" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
       }`}
     >
-      <span className="truncate">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-left" title={label}>{label}</span>
       <span className="shrink-0 font-mono text-[10.5px] text-zinc-600">{count}</span>
     </button>
   );

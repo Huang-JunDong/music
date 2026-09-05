@@ -176,11 +176,20 @@ export default function CollectionsPage() {
                       <MoreVertical className="h-[18px] w-[18px] drop-shadow" aria-hidden="true" />
                     </span>
                   </div>
-                  <p className="mt-2 truncate text-[13px] font-semibold text-zinc-200 transition-colors group-hover:text-fuchsia-200">{c.name}</p>
-                  <p className="mt-0.5 truncate text-[11px] text-zinc-500">
-                    {c.track_count > 0 ? `${c.track_count} 首` : "空歌单"}
-                    {c.kind === "imported" && c.creator ? ` · ${c.creator}` : ""}
-                  </p>
+                  <div className="tip mt-2 w-full">
+                    <p className="truncate text-[13px] font-semibold text-zinc-200 transition-colors group-hover:text-fuchsia-200">{c.name}</p>
+                    <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+                      {c.track_count > 0 ? `${c.track_count} 首` : "空歌单"}
+                      {c.kind === "imported" && c.creator ? ` · ${c.creator}` : ""}
+                    </p>
+                    {/* 悬浮完整歌单名（PC 精确指针设备；触屏不触发） */}
+                    <span className="tip-bubble" aria-hidden="true">
+                      <span className="tip-name">{c.name}</span>
+                      <span className="tip-sub">
+                        {[c.track_count > 0 ? `${c.track_count} 首` : "空歌单", c.kind === "imported" && c.creator ? c.creator : ""].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                  </div>
                 </Link>
               </motion.div>
             );

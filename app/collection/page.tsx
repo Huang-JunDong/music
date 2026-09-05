@@ -217,7 +217,7 @@ function CollectionDetailInner() {
                   {meta.creator && <span>· {meta.creator}</span>}
                   <span>· 创建于 {fmtDate(meta.created_at)}</span>
                 </p>
-                {meta.description && <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-zinc-500">{meta.description}</p>}
+                {meta.description && <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-zinc-500" title={meta.description}>{meta.description}</p>}
 
                 {/* 操作 */}
                 <div className="mt-4 flex flex-wrap items-center gap-2.5">
@@ -377,10 +377,10 @@ function ManageList({
               </span>
             </button>
             <button onClick={() => onPlay(s)} className="flex min-w-0 flex-1 flex-col items-start text-left">
-              <span className="w-full truncate text-[14px] font-semibold text-zinc-100">{s.name}</span>
+              <span className="w-full truncate text-[14px] font-semibold text-zinc-100" title={`${s.name} - ${s.artist || "未知歌手"}`}>{s.name}</span>
               <span className="flex w-full items-center gap-1.5 text-[11.5px] text-zinc-500">
                 <span className={`shrink-0 rounded border px-1 py-px text-[9px] ${sourceMeta(s.source).badge}`}>{sourceMeta(s.source).label}</span>
-                <span className="truncate">{s.artist || "未知歌手"}</span>
+                <span className="min-w-0 flex-1 truncate">{s.artist || "未知歌手"}</span>
                 <span className="shrink-0 tabular-nums">{s.duration ? fmtTimeClient(s.duration) : ""}</span>
               </span>
             </button>
@@ -513,9 +513,9 @@ function ImportLocalModal({
                       {checked && <Check className="h-3.5 w-3.5 text-white" strokeWidth={3} />}
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="w-full truncate text-[13.5px] font-semibold text-zinc-100">{t.name}</span>
+                      <span className="w-full truncate text-[13.5px] font-semibold text-zinc-100" title={`${t.name} - ${t.artist || "未知歌手"}`}>{t.name}</span>
                       <span className="flex w-full items-center gap-1.5 text-[11px] text-zinc-500">
-                        <span className="truncate">{t.artist || "未知歌手"}</span>
+                        <span className="min-w-0 flex-1 truncate">{t.artist || "未知歌手"}</span>
                         <span className="shrink-0">{t.size_text || ""}</span>
                         <span className="shrink-0 tabular-nums">{t.duration ? fmtTimeClient(t.duration) : ""}</span>
                       </span>

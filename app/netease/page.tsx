@@ -157,20 +157,7 @@ export default function NeteaseConsolePage() {
       <PageHeader
         icon={Terminal}
         title="网易云 API 控制台"
-        subtitle={
-          <>
-            迁移自{" "}
-            <a
-              href="https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced"
-              target="_blank"
-              rel="noreferrer"
-              className="text-zinc-400 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-200"
-            >
-              api-enhanced
-            </a>{" "}
-            · 路由规则 1:1 · 未显式传 cookie 时自动注入已登录账号
-          </>
-        }
+        subtitle="路由规则 1:1 · 未显式传 cookie 时自动注入已登录账号"
         actions={
           <div className="flex items-center gap-2 text-[12px]">
             <span className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-zinc-300">
@@ -500,7 +487,7 @@ function CategoryButton({
         active ? "bg-violet-500/15 font-semibold text-zinc-100" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
       }`}
     >
-      <span className="truncate">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-left" title={label}>{label}</span>
       <span className="shrink-0 font-mono text-[10.5px] text-zinc-600">{count}</span>
     </button>
   );

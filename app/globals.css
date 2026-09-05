@@ -273,6 +273,65 @@ body {
   animation-play-state: paused;
 }
 
+/* ---------- 悬浮信息卡（截断文本的完整访问路径） ----------
+ * 纯 CSS、零 JS：仅"精确指针"设备（鼠标/触控板）启用 hover 显示，触屏永不触发。
+ * 出现延迟 350ms（避免扫过列表时闪烁），消失即时。
+ * .tip 为定位锚点；.tip-bubble 常驻 DOM 但 opacity:0 + pointer-events:none，不参与布局交互。
+ */
+.tip {
+  position: relative;
+}
+.tip-bubble {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  display: flex;
+  width: max-content;
+  max-width: min(420px, 72vw);
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-default);
+  background: rgba(24, 24, 32, 0.94);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.7);
+  padding: 8px 12px;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s var(--ease-out-soft) 0s;
+}
+/* 仅精确指针设备（鼠标/触控板）启用 hover 显示；触屏 tap 不会粘滞出气泡 */
+@media (hover: hover) and (pointer: fine) {
+  .tip:hover > .tip-bubble,
+  .tip:focus-within > .tip-bubble {
+    opacity: 1;
+    transition-delay: 0.35s;
+  }
+}
+/* 触屏（无 hover 能力）强制隐藏气泡 */
+@media (hover: none), (pointer: coarse) {
+  .tip-bubble {
+    visibility: hidden;
+  }
+}
+.tip-name {
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.tip-sub {
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- 沉浸区隐藏滚动条（保留滚动能力） ---------- */
 .no-scrollbar {
   scrollbar-width: none;

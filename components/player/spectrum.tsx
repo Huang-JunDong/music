@@ -3,8 +3,8 @@
 /**
  * 实时频谱（播放详情页）：Web Audio AnalyserNode FFT → Canvas 2D + rAF。
  *
- * - 零第三方依赖；对数频率分桶 + AGC 滑动峰值归一化 + 高频增益补偿 ——
- *   低音鼓点 / 中频人声 / 高频镲片在各频段条上都可满幅跳动，高低音区分明显
+ * - 零第三方依赖；对数频率分桶后直接线性映射原始 FFT 能级 ——
+ *   不做增益补偿 / 归一化等针对性优化，忠实还原原始声音的频谱形态
  * - 性能：30fps 节流、分桶表与渐变预计算缓存、条数按宽度 16–36 自适应
  * - 颜色跟随封面主色（tone prop 与播放页光晕同源），无主色回退品牌渐变
  * - AudioContext 安全初始化：先 resume 成功再挂 MediaElementSource（挂上后无法撤销，
@@ -107,8 +107,6 @@ export const Spectrum = memo(function Spectrum({
     let bars = 24;
     let levels: number[] = new Array(bars).fill(0);
     let peaks: number[] = new Array(bars).fill(0);
-    /* AGC 滑动峰值：快 attack、慢 release，各频段条独立满幅 */
-    let agc: number[] = new Array(bars).fill(0.5);
     /* 对数分桶表（resize 时预计算，帧内零 exp） */
     let bucketLo: number[] = [];
     let bucketHi: number[] = [];
@@ -140,7 +138,6 @@ export const Spectrum = memo(function Spectrum({
       if (levels.length !== bars) {
         levels = new Array(bars).fill(0);
         peaks = new Array(bars).fill(0);
-        agc = new Array(bars).fill(0.5);
       }
       rebuildBuckets();
       gradKey = "";
@@ -171,20 +168,16 @@ export const Spectrum = memo(function Spectrum({
       const ton = toneRef.current;
       if (g && isPlaying) g.analyser.getByteFrequencyData(g.freq);
 
-      /* 目标能级：FFT 对数分桶 max → 高频斜坡增益 → AGC 归一化；graph 不可用走合成波形 */
+      /* 目标能级：FFT 对数分桶 max 直接线性映射（原始声音，不做增益/归一化加工）；
+         graph 不可用走合成波形 */
       for (let i = 0; i < bars; i++) {
         let raw: number;
         if (g && g.freq.length > 0) {
           let m = 0;
           const hi = bucketHi[i] ?? i + 1;
           for (let b = bucketLo[i] ?? 1; b < hi && b < g.freq.length; b++) m = Math.max(m, g.freq[b]);
-          /* 高频斜坡增益：能量随频率衰减，0.7→1.35 补偿让镲片/气声可见 */
-          raw = ((m / 255) * (0.7 + (0.65 * i) / bars)) ** 1.1;
+          raw = m / 255;
           if (!isPlaying) raw = 0;
-          /* AGC：峰值快升、缓降（2%/帧），floor 0.4 防静段爆满 */
-          if (raw > agc[i]) agc[i] = raw;
-          else agc[i] += (raw - agc[i]) * 0.02;
-          raw = Math.min(1, raw / Math.max(agc[i], 0.4));
         } else {
           const phase = t / 1000;
           raw = isPlaying

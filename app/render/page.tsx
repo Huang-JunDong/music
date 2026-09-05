@@ -479,7 +479,7 @@ function RenderPageInner() {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[14px] font-semibold text-zinc-100">{song.name}</p>
+                  <p className="truncate text-[14px] font-semibold text-zinc-100" title={`${song.name} - ${song.artist || "未知歌手"}`}>{song.name}</p>
                   <p className="truncate text-xs text-zinc-500">
                     {song.artist || "未知歌手"} {meta && <span className={`ml-1 rounded border px-1 text-[9px] ${meta.badge}`}>{meta.label}</span>}
                   </p>

@@ -3,10 +3,15 @@ import { getProvider, GetSourceDescription } from "@/lib/registry";
 import { filterAvailableSources, sourcesFromQuery, USER_PLAYLIST_SOURCE_NAMES } from "@/lib/web-core";
 import { createSourceSessionStore, runWithSourceSession } from "@/lib/cookies";
 import { browserSourceCookies, requestIsHttps, srcSessionSetCookie } from "@/lib/source-session";
+import { createTtlCache, sourceCookieFingerprint } from "@/lib/response-cache";
 import type { Playlist } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 个人歌单多源聚合：120s 短缓存 + 并发去重（歌单可变，TTL 取短）；
+ *  仅缓存无失败 tab 的结果；key 含音源凭证指纹防跨账号串数据 */
+const userPlaylistsCache = createTtlCache<Record<string, unknown>>(120_000, 30);
 
 /**
  * GET /api/user_playlists?sources= → {tabs:[{source,name,count,playlists,error?}], error?}
@@ -22,7 +27,18 @@ export async function GET(req: NextRequest) {
   const session = createSourceSessionStore(browserSourceCookies(req), true);
   const secure = requestIsHttps(req);
   return runWithSourceSession(session, async () => {
-    const res = await loadUserPlaylistTabs(req);
+    const sources = filterAvailableSources(
+      sourcesFromQuery(req.nextUrl.searchParams),
+      USER_PLAYLIST_SOURCE_NAMES,
+    );
+    /* 缓存包装在音源会话内执行：miss 时正常回源（凭证刷新回写不受影响），
+       命中时无 provider 调用、无 pendingWrites */
+    const payload = await userPlaylistsCache.wrap(
+      `${sources.join(",")}|${sourceCookieFingerprint(req)}`,
+      () => aggregateUserPlaylists(sources),
+      (p) => !p.error,
+    );
+    const res = NextResponse.json(payload);
     for (const [source, value] of session.pendingWrites) {
       if (!session.values.has(source) || !value) continue;
       res.headers.append("Set-Cookie", srcSessionSetCookie(source, value, secure));
@@ -31,12 +47,7 @@ export async function GET(req: NextRequest) {
   });
 }
 
-async function loadUserPlaylistTabs(req: NextRequest): Promise<NextResponse> {
-  const sources = filterAvailableSources(
-    sourcesFromQuery(req.nextUrl.searchParams),
-    USER_PLAYLIST_SOURCE_NAMES,
-  );
-
+async function aggregateUserPlaylists(sources: string[]): Promise<Record<string, unknown>> {
   const results = await Promise.allSettled(
     sources.map(async (source) => {
       const provider = getProvider(source);
@@ -75,5 +86,5 @@ async function loadUserPlaylistTabs(req: NextRequest): Promise<NextResponse> {
 
   const payload: Record<string, unknown> = { tabs };
   if (error) payload.error = error;
-  return NextResponse.json(payload);
+  return payload;
 }

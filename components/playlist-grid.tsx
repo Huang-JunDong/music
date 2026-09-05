@@ -86,11 +86,20 @@ export function PlaylistGrid({
                   <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
                 </span>
               </div>
-              <p className="mt-2 truncate text-[13px] font-semibold text-zinc-200 transition-colors group-hover:text-fuchsia-200">{p.name}</p>
-              <p className="mt-0.5 truncate text-[11px] text-zinc-500">
-                {p.track_count > 0 ? `${p.track_count} 首` : ""}
-                {p.creator ? `${p.track_count > 0 ? " · " : ""}${p.creator}` : ""}
-              </p>
+              <div className="tip mt-2 w-full">
+                <p className="truncate text-[13px] font-semibold text-zinc-200 transition-colors group-hover:text-fuchsia-200">{p.name}</p>
+                <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+                  {p.track_count > 0 ? `${p.track_count} 首` : ""}
+                  {p.creator ? `${p.track_count > 0 ? " · " : ""}${p.creator}` : ""}
+                </p>
+                {/* 悬浮完整歌单名（PC 精确指针设备；触屏不触发） */}
+                <span className="tip-bubble" aria-hidden="true">
+                  <span className="tip-name">{p.name}</span>
+                  <span className="tip-sub">
+                    {[p.track_count > 0 ? `${p.track_count} 首` : "", p.creator, meta.label].filter(Boolean).join(" · ")}
+                  </span>
+                </span>
+              </div>
             </Link>
           </motion.div>
         );

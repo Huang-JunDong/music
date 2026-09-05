@@ -161,12 +161,19 @@ export function PlayerBar() {
                 <ChevronUp className="h-5 w-5 text-white" />
               </span>
             </button>
-            <div className="flex min-w-0 flex-col">
+            <div className="tip flex min-w-0 flex-col">
               <button onClick={() => setExpanded(true)} className="truncate text-left text-sm font-semibold text-zinc-100 hover:underline">
                 {song.name}
               </button>
               <span className="truncate text-xs text-zinc-400">{song.artist || "未知歌手"}</span>
               <span className={`mt-0.5 inline-flex w-fit items-center rounded border px-1.5 py-px text-[10px] ${meta.badge}`}>{meta.label}</span>
+              {/* 悬浮完整信息（PC 精确指针设备；280px 固定宽常截断） */}
+              <span className="tip-bubble" aria-hidden="true">
+                <span className="tip-name">{song.name}</span>
+                <span className="tip-sub">
+                  {[song.artist || "未知歌手", song.album ? `《${song.album}》` : "", meta.label].filter(Boolean).join(" · ")}
+                </span>
+              </span>
             </div>
           </div>
 

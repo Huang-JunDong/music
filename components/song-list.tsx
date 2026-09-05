@@ -652,7 +652,7 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: Math.min(i * 0.025, 0.5), duration: 0.28 }}
-              className={`group grid grid-cols-[36px_44px_1fr_170px_minmax(88px,150px)_60px_190px] items-center gap-3 rounded-xl px-3 py-2 transition-colors ${
+              className={`group grid grid-cols-[36px_44px_minmax(0,1fr)_minmax(96px,150px)_54px_212px] items-center gap-3 rounded-xl px-3 py-2 transition-colors xl:grid-cols-[36px_44px_minmax(0,1.8fr)_minmax(0,1fr)_minmax(96px,150px)_54px_212px] ${
                 cur ? "bg-gradient-to-r from-violet-500/[0.14] to-fuchsia-500/[0.08]" : sel ? "bg-violet-500/[0.08]" : "hover:bg-white/[0.035]"
               }`}
             >
@@ -682,32 +682,46 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
               >
                 {cur && playing ? <Pause className="h-4 w-4" fill="currentColor" /> : <Play className="h-4 w-4" fill="currentColor" />}
               </button>
-              {/* 标题 */}
+              {/* 标题（悬浮信息卡：截断时鼠标悬停可见完整歌名与歌曲信息；触屏不触发） */}
               <div className="flex min-w-0 flex-col">
-                <span className={`flex items-center gap-1 truncate text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`}>
-                  {s.link ? (
-                    <a
-                      href={s.link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="truncate decoration-dotted underline-offset-4 hover:text-white hover:underline"
-                      title={`在${meta.label}打开`}
-                    >
-                      {s.name}
-                    </a>
-                  ) : (
-                    <span className="truncate">{s.name}</span>
-                  )}
+                <span className={`flex min-w-0 items-center gap-1 text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`}>
+                  <span className="tip min-w-0 flex-1">
+                    {s.link ? (
+                      <a
+                        href={s.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block w-full truncate decoration-dotted underline-offset-4 hover:text-white hover:underline"
+                      >
+                        {s.name}
+                      </a>
+                    ) : (
+                      <span className="block w-full truncate">{s.name}</span>
+                    )}
+                    <span className="tip-bubble" aria-hidden="true">
+                      <span className="tip-name">{s.name}{s.is_vip ? "（VIP）" : ""}</span>
+                      <span className="tip-sub">
+                        {[
+                          s.artist || "未知歌手",
+                          s.album ? `《${s.album}》` : "",
+                          s.duration ? fmtTimeClient(s.duration) : "",
+                          `${meta.label}${q ? ` · ${q}` : ""}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </span>
+                  </span>
                   {s.is_vip && <span className="shrink-0 align-middle text-[10px] font-bold text-amber-400/90">VIP</span>}
-                  <span className="ml-1 shrink-0">{inspectTag(s)}</span>
+                  <span className="ml-1 min-w-0 shrink truncate">{inspectTag(s)}</span>
                 </span>
-                <span className="flex truncate text-xs text-zinc-500">
+                <span className="flex min-w-0 text-xs text-zinc-500">
                   {tokens.length > 0 ? tokens.map((t, ti) => (
-                    <span key={ti} className="flex items-center">
-                      {ti > 0 && <span className="mx-0.5 text-zinc-600">/</span>}
+                    <span key={ti} className="flex min-w-0 items-center">
+                      {ti > 0 && <span className="mx-0.5 shrink-0 text-zinc-600">/</span>}
                       <button
                         onClick={() => searchExactArtist(t)}
-                        className="max-w-[160px] truncate decoration-dotted underline-offset-4 hover:text-fuchsia-300 hover:underline"
+                        className="w-full min-w-0 max-w-[160px] truncate decoration-dotted underline-offset-4 hover:text-fuchsia-300 hover:underline"
                         title={`精确搜索：${t}`}
                       >
                         {t}
@@ -716,13 +730,13 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                   )) : "未知歌手"}
                 </span>
               </div>
-              {/* 专辑 */}
+              {/* 专辑（lg 窄屏隐藏让位歌名，xl 起弹性展示） */}
               {albumLink ? (
-                <Link className="block truncate text-xs text-zinc-500 decoration-dotted underline-offset-4 hover:text-violet-300 hover:underline" href={albumLink} title={`查看专辑：${s.album}`}>
+                <Link className="hidden w-full min-w-0 truncate text-xs text-zinc-500 decoration-dotted underline-offset-4 hover:text-violet-300 hover:underline xl:block" href={albumLink} title={`查看专辑：${s.album}`}>
                   {s.album}
                 </Link>
               ) : (
-                <span className="truncate text-xs text-zinc-500">{s.album || "—"}</span>
+                <span className="hidden w-full min-w-0 truncate text-xs text-zinc-500 xl:block">{s.album || "—"}</span>
               )}
               {/* 源 */}
               <span className="flex min-w-0 flex-wrap items-center gap-1">
@@ -851,8 +865,8 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                 </span>
               </button>
               <button onClick={() => onPlay(s)} className="flex min-w-0 flex-1 flex-col items-start text-left">
-                <span className={`flex w-full items-center gap-1.5 truncate text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`}>
-                  <span className="truncate">{s.name}</span>
+                <span className={`flex w-full items-center gap-1.5 text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`}>
+                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
                   {s.is_vip && <span className="shrink-0 text-[9px] font-bold text-amber-400/90">VIP</span>}
                   <span className="shrink-0">{inspectTag(s)}</span>
                 </span>
@@ -877,12 +891,12 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                           searchExactArtist(tokens[0]);
                         }
                       }}
-                      className="cursor-pointer truncate decoration-dotted underline-offset-4 hover:text-fuchsia-300"
+                      className="min-w-0 flex-1 cursor-pointer truncate text-left decoration-dotted underline-offset-4 hover:text-fuchsia-300"
                     >
                       {s.artist}
                     </span>
                   ) : (
-                    <span className="truncate">{s.artist || "未知歌手"}</span>
+                    <span className="min-w-0 flex-1 truncate">{s.artist || "未知歌手"}</span>
                   )}
                   <span className="shrink-0 tabular-nums">{s.duration ? fmtTimeClient(s.duration) : ""}</span>
                 </span>
@@ -1084,7 +1098,7 @@ function CollectSheet({
                   <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500/25 to-fuchsia-500/20">
                     <ListPlus className="h-4 w-4 text-fuchsia-300" />
                   </span>
-                  <span className="flex-1 truncate text-sm font-medium text-zinc-200">{c.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-200" title={c.name}>{c.name}</span>
                   <span className="text-[10px] text-zinc-500">{c.kind === "imported" ? "导入" : "自建"}</span>
                 </button>
               ))

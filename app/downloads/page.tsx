@@ -188,9 +188,9 @@ export default function DownloadsPage() {
                     <StIcon className={`h-[18px] w-[18px] ${st.cls}`} aria-hidden="true" />
                   </span>
                   <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[13.5px] font-semibold text-zinc-100">{r.Name || "未知歌曲"}</span>
-                    <span className="flex items-center gap-1.5 truncate text-[11.5px] text-zinc-500">
-                      <span className="truncate">{r.Artist || "未知歌手"}</span>
+                    <span className="truncate text-[13.5px] font-semibold text-zinc-100" title={`${r.Name || "未知歌曲"} - ${r.Artist || "未知歌手"}`}>{r.Name || "未知歌曲"}</span>
+                    <span className="flex items-center gap-1.5 text-[11.5px] text-zinc-500">
+                      <span className="min-w-0 flex-1 truncate">{r.Artist || "未知歌手"}</span>
                       {r.Source && <span className={`shrink-0 rounded border px-1 text-[9px] ${meta.badge}`}>{meta.label}</span>}
                       <span className="shrink-0 tabular-nums">{r.CreatedAt?.replace("T", " ").slice(0, 19)}</span>
                     </span>

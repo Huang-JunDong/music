@@ -15,14 +15,14 @@ export async function GET(req: NextRequest) {
 
   const proxyURL = (req.nextUrl.searchParams.get("proxy") ?? "").trim() || DEFAULT_GITHUB_PROXY_URL;
   const target =
-    proxyURL.replace(/\/+$/, "") + "/" + "https://github.com/guohuiyuan/go-music-dl";
+    proxyURL.replace(/\/+$/, "") + "/" + "https://github.com";
   const startedAt = Date.now();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   try {
     const resp = await fetch(target, {
-      headers: { "User-Agent": `go-music-dl/${APP_VERSION}` },
+      headers: { "User-Agent": `music-web/${APP_VERSION}` },
       signal: controller.signal,
       redirect: "follow",
       cache: "no-store",

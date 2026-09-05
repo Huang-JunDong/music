@@ -541,12 +541,12 @@ function LocalMusicInner() {
                   </button>
 
                   <button onClick={() => playTrack(t)} className="flex min-w-0 flex-1 flex-col items-start text-left">
-                    <span className={`w-full truncate text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`}>{t.name}</span>
+                    <span className={`w-full truncate text-[14px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-100"}`} title={`${t.name} - ${t.artist || "未知歌手"}`}>{t.name}</span>
                     <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11.5px] text-zinc-500">
                       <span className="shrink-0 rounded border border-violet-500/30 bg-violet-500/10 px-1 py-px text-[9px] uppercase text-violet-300">
                         {t.ext || "audio"}
                       </span>
-                      <span className="truncate">{t.artist || "未知歌手"}</span>
+                      <span className="min-w-0 flex-1 truncate">{t.artist || "未知歌手"}</span>
                       <span className="shrink-0">{t.size_text || ""}</span>
                       <span className="shrink-0 tabular-nums">{t.duration ? fmtTimeClient(t.duration) : ""}</span>
                     </span>

@@ -163,7 +163,7 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
                   </p>
                 )}
                 {pl.description && (
-                  <p className="lyric-mask mt-2.5 line-clamp-3 text-xs leading-relaxed text-zinc-500">{pl.description}</p>
+                  <p className="lyric-mask mt-2.5 line-clamp-3 text-xs leading-relaxed text-zinc-500" title={pl.description}>{pl.description}</p>
                 )}
 
                 {/* 操作 */}

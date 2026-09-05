@@ -2054,7 +2054,7 @@ function applyVerifyParams(params: Record<string, string>, verifyParams: string)
 }
 
 function scanLoginURL(token: string): string {
-  const params = new URLSearchParams({ token: token.trim(), os: "Windows", computer_name: "go-music-dl" });
+  const params = new URLSearchParams({ token: token.trim(), os: "Windows", computer_name: "music-web" });
   return `https://bff-pc.qishui.com/light/invoke/scan_login?${params}`;
 }
 

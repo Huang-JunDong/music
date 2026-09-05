@@ -2,7 +2,7 @@
   "name": "music-dl-next",
   "version": "1.1.0",
   "private": true,
-  "description": "Full-stack music search & download app (Next.js Route Handlers re-implemented from go-music-dl)",
+  "description": "Full-stack music search & download app (Next.js Route Handlers)",
   "engines": {
     "node": ">=20.0.0"
   },

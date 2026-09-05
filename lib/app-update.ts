@@ -80,7 +80,7 @@ async function requestGitHubRelease(apiURL: string): Promise<GitHubRelease> {
     const resp = await fetch(apiURL, {
       headers: {
         Accept: "application/vnd.github+json",
-        "User-Agent": `go-music-dl/${APP_VERSION}`,
+        "User-Agent": `music-web/${APP_VERSION}`,
       },
       signal: controller.signal,
       cache: "no-store",

@@ -119,10 +119,10 @@ export function QueueDrawer({ open, onClose }: { open: boolean; onClose: () => v
                             )}
                           </span>
                           <span className="flex min-w-0 flex-col">
-                            <span className={`truncate text-[13px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-200"}`}>{s.name}</span>
-                            <span className="flex items-center gap-1.5 truncate text-[11px] text-zinc-500">
+                            <span className={`truncate text-[13px] font-semibold ${cur ? "text-fuchsia-200" : "text-zinc-200"}`} title={`${s.name} - ${s.artist || "未知歌手"}`}>{s.name}</span>
+                            <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
                               <span className={`shrink-0 rounded border px-1 text-[9px] ${meta.badge}`}>{meta.label}</span>
-                              <span className="truncate">{s.artist}</span>
+                              <span className="min-w-0 flex-1 truncate">{s.artist}</span>
                             </span>
                           </span>
                         </button>
@@ -157,10 +157,10 @@ export function QueueDrawer({ open, onClose }: { open: boolean; onClose: () => v
                         )}
                       </span>
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate text-[13px] font-semibold text-zinc-200">{s.name}</span>
-                        <span className="flex items-center gap-1.5 truncate text-[11px] text-zinc-500">
+                        <span className="truncate text-[13px] font-semibold text-zinc-200" title={`${s.name} - ${s.artist || "未知歌手"}`}>{s.name}</span>
+                        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
                           <span className={`shrink-0 rounded border px-1 text-[9px] ${meta.badge}`}>{meta.label}</span>
-                          <span className="truncate">{s.artist}</span>
+                          <span className="min-w-0 flex-1 truncate">{s.artist}</span>
                         </span>
                       </span>
                       <Play className="h-3.5 w-3.5 shrink-0 text-zinc-500" aria-hidden="true" />

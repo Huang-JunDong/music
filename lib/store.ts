@@ -218,7 +218,8 @@ export interface WebSettings {
   vgExportVideo: boolean;
 }
 
-export const DEFAULT_UPDATE_REPO_URL = "https://github.com/guohuiyuan/go-music-dl";
+/** 更新检查仓库不预设默认值：避免前端默认展示第三方仓库地址，由用户自行填写 */
+export const DEFAULT_UPDATE_REPO_URL = "";
 export const DEFAULT_GITHUB_PROXY_URL = "https://edgeone.gh-proxy.com";
 export const DEFAULT_WEB_PAGE_SIZE = 200;
 export const DEFAULT_CLI_PAGE_SIZE = 20;

@@ -805,7 +805,7 @@ function PlaybackSection() {
                   id="setting-repo"
                   value={form.updateRepoUrl}
                   onChange={(e) => setForm({ ...form, updateRepoUrl: e.target.value })}
-                  placeholder="https://github.com/guohuiyuan/go-music-dl"
+                  placeholder="https://github.com/<用户名>/<仓库名>"
                   spellCheck={false}
                   className="h-11 w-full rounded-xl input-shell px-3.5 text-sm text-zinc-200"
                 />
@@ -964,8 +964,8 @@ function DownloadsSection() {
                 <li key={r.ID} className="flex min-h-[52px] items-center gap-3 border-b border-white/[0.04] py-2 last:border-0">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] font-medium text-zinc-200">{r.Name || "未命名"}</p>
-                    <p className="mt-0.5 flex min-w-0 items-center gap-1.5 truncate text-[11px] text-zinc-500">
-                      <span className="truncate">{r.Artist || "未知歌手"}</span>·<span className="shrink-0">{sourceMeta(r.Source).label}</span>·
+                    <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
+                      <span className="min-w-0 flex-1 truncate">{r.Artist || "未知歌手"}</span>·<span className="shrink-0">{sourceMeta(r.Source).label}</span>·
                       <span className="shrink-0">{fmtDateTime(r.CreatedAt)}</span>
                     </p>
                   </div>

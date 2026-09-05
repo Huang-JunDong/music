@@ -2,10 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, GetPlaylistCategorySourceNames, GetSourceDescription } from "@/lib/registry";
 import { sourcesFromQuery } from "@/lib/web-core";
+import { createTtlCache, sourceCookieFingerprint } from "@/lib/response-cache";
 import type { PlaylistCategory } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 分类目录多源聚合：5min 缓存 + 并发去重，广场页反复进入零回源；仅缓存无失败的结果 */
+const playlistCategoriesCache = createTtlCache<Record<string, unknown>>(300_000, 30);
 
 /** 请求源与支持源求交集（空回退全部，对齐 playlistCategorySourcesFromQuery） */
 function playlistCategorySourcesFromQuery(params: URLSearchParams): string[] {
@@ -39,6 +43,15 @@ export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandle
 async function getHandler(req: NextRequest) {
   const sources = playlistCategorySourcesFromQuery(req.nextUrl.searchParams);
 
+  const payload = await playlistCategoriesCache.wrap(
+    `${sources.join(",")}|${sourceCookieFingerprint(req)}`,
+    () => aggregateCategories(sources),
+    (p) => !p.error,
+  );
+  return NextResponse.json(payload);
+}
+
+async function aggregateCategories(sources: string[]): Promise<Record<string, unknown>> {
   const results = await Promise.allSettled(
     sources.map(async (source) => {
       const provider = getProvider(source);
@@ -92,7 +105,7 @@ async function getHandler(req: NextRequest) {
     error = `部分来源分类加载失败：${failed.join("、")}`;
   }
 
-  const payload: Record<string, unknown> = { sources: views };
-  if (error) payload.error = error;
-  return NextResponse.json(payload);
+  const result: Record<string, unknown> = { sources: views };
+  if (error) result.error = error;
+  return result;
 }
