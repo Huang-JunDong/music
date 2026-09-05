@@ -13,7 +13,6 @@
  */
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 import { QQClient, CredentialInvalidError } from "@/lib/qq/client";
 import {
@@ -70,9 +69,6 @@ async function handle(
   req: NextRequest,
   ctx: { params: Promise<{ path?: string[] }> },
 ): Promise<Response> {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
-
   // 写操作守卫（审核整改 P1-01）：POST/PUT/DELETE/PATCH 一律 XHR + 同源（CSRF 防护，对齐项目 A-15 基线）
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { clearDownloadRecords, getDownloadRecordPage } from "@/lib/download-record";
-import { requireAuth } from "@/lib/auth";
+import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,10 +68,10 @@ export async function GET(req: NextRequest) {
   });
 }
 
-/** DELETE /api/downloads/records — 清空记录（保留去重表；受保护，对齐 Go configAPI） */
+/** DELETE /api/downloads/records — 清空记录（保留去重表；免登录，仅 CSRF 写守卫） */
 export async function DELETE(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
+  const guarded = checkWriteGuard(req);
+  if (guarded) return guarded;
   clearDownloadRecords();
   return NextResponse.json({ status: "ok" });
 }

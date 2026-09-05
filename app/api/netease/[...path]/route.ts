@@ -3,7 +3,7 @@
  * 路由规则 1:1：文件名下划线转斜杠（daily_signin / fm_trash / personal_fm 三个特殊路由原样）
  * 支持 query / JSON body / multipart 文件上传（imgFile、songFile 字段自动转 {name,data,mimetype}）
  * 未显式传 cookie 时自动注入 SQLite 存储的 netease cookie；响应 Set-Cookie 自动合并回存储
- * 安全基线：全路由接入 requireAuth（登录态之后）；GET 缓存 key 附带生效 cookie 指纹（显式 cookie 请求不缓存）
+ * 免登录（最大限度放开）；GET 缓存 key 附带生效 cookie 指纹（显式 cookie 请求不缓存）
  */
 import { NextRequest, NextResponse } from "next/server";
 import { resolveRoute, MODULES, MODULE_COUNT } from "@/lib/netease/registry";
@@ -12,7 +12,6 @@ import { cookieToJson, generateRandomChineseIP } from "@/lib/netease/utils";
 import { ncmGlobals } from "@/lib/netease/global-state";
 import { mergeStoredCookie } from "@/lib/netease";
 import { getCookie } from "@/lib/cookies";
-import { requireAuth } from "@/lib/auth";
 import { enableGeneralUnblock, enableProxy, proxyUrl } from "@/lib/env";
 import { md5hex } from "@/lib/crypto";
 import { logger } from "@/lib/netease/logger";
@@ -134,10 +133,6 @@ function appendSetCookies(res: NextResponse, cookies: string[], req: NextRequest
 }
 
 async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
-  // 鉴权：439 接口网关置于管理员登录态之后（对齐 /api/settings、/api/cookies 模式）
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
-
   const { path } = await ctx.params;
   const routePath = "/" + (path ?? []).join("/");
   const entry = resolveRoute(routePath);

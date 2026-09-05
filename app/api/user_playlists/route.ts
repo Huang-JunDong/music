@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProvider, GetSourceDescription } from "@/lib/registry";
 import { filterAvailableSources, sourcesFromQuery, USER_PLAYLIST_SOURCE_NAMES } from "@/lib/web-core";
-import { requireAuth } from "@/lib/auth";
 import type { Playlist } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -10,16 +9,10 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/user_playlists?sources= → {tabs:[{source,name,count,playlists,error?}], error?}
  * （page=1,limit=50；汇总 error 对齐 Go loadPlaylistSourceTabs）
- * 审核整改 A-04（软鉴权）：该接口消费服务端存储的第三方登录态 Cookie（个人歌单），
- * 未登录返回 200 + login_required（而非 401 踢登录），保证歌单广场未登录可浏览；
- * 前端据此展示"登录后可见"占位。
+ * 免登录（最大限度放开）：直接消费服务端存储的第三方登录态 Cookie（个人歌单）；
+ * 上游未配置 Cookie 时由各源自行报错（tab.error 呈现）。
  */
 export async function GET(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) {
-    return NextResponse.json({ tabs: [], login_required: true, error: "登录后可查看各源个人收藏歌单" });
-  }
-
   const sources = filterAvailableSources(
     sourcesFromQuery(req.nextUrl.searchParams),
     USER_PLAYLIST_SOURCE_NAMES,

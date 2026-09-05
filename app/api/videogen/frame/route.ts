@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addFrames, getSession, VideogenFrameLimitError } from "@/lib/videogen";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -23,8 +22,6 @@ function decodeBase64Frame(dataURI: string): Buffer {
  * 或 JSON {session_id, frames:[base64], start_idx}）→ {status, received}
  */
 export async function POST(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
 

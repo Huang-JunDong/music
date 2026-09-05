@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getProvider } from "@/lib/registry";
 import { fetchSource } from "@/lib/web-core";
 import { cleanupSession, renderVideo, takeSession } from "@/lib/videogen";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -11,11 +10,9 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/videogen/finish {session_id, name}
  * 无 ffmpeg → 501 {"error":"ffmpeg unavailable"}；成功 → {url}
- * 审核整改 A-04：纳入鉴权（触发 ffmpeg 渲染与产物落盘）。
+ * 免登录（CSRF 写守卫保留；触发 ffmpeg 渲染与产物落盘）。
  */
 export async function POST(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
   let body: { session_id?: string; name?: string };

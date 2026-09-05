@@ -5,7 +5,6 @@ import {
   upsertLocalMusicIndexRow,
 } from "@/lib/local-music";
 import { saveDownloadDedupEntry } from "@/lib/download-record";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -16,11 +15,9 @@ const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 
 /**
  * POST /api/local_music/upload — multipart file（白名单扩展名，唯一化文件名，music-metadata 读元数据）
- * 审核整改 A-04/A-09/A-15：纳入鉴权 + 写守卫 + 大小上限（超限 413 而非整读进内存）。
+ * 本地音乐模块免登录：CSRF 写守卫 + 大小上限（超限 413 而非整读进内存）。
  */
 export async function POST(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
 

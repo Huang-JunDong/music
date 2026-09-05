@@ -9,7 +9,6 @@ import {
   syncTracksToIndexAsync,
   trackJSON,
 } from "@/lib/local-music";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -86,10 +85,8 @@ export async function GET(req: NextRequest) {
 }
 
 /** DELETE /api/local_music?id= — 硬删除（磁盘文件 + 索引行）
- *  审核整改 A-04/A-15：破坏性文件操作纳入鉴权 + 写守卫。 */
+ *  本地音乐模块免登录，仅保留 CSRF 写守卫。 */
 export async function DELETE(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
 

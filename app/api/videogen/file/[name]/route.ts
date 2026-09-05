@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "node:stream";
 import { videosDir } from "@/lib/videogen";
 import { parseRangeHeader } from "@/lib/web-core";
-import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,12 +12,8 @@ function nodeStreamBody(stream: fs.ReadStream): ReadableStream<Uint8Array> {
   return Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
 }
 
-/** GET /api/videogen/file/[name] — 渲染结果视频（Range 支持，供 <video>/下载）
- *  审核整改 A-04：纳入鉴权（渲染会话产物，与会话创建方同权限）。 */
+/** GET /api/videogen/file/[name] — 渲染结果视频（Range 支持，供 <video>/下载）· 免登录 */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ name: string }> }) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
-
   const { name } = await params;
   const safeName = path.basename((name ?? "").trim());
   if (!safeName || safeName.startsWith(".")) {

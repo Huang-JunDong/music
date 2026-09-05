@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { createSession, VideogenSessionLimitError } from "@/lib/videogen";
-import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -12,7 +11,7 @@ export const dynamic = "force-dynamic";
  * POST /api/videogen/init（multipart: id, source[, audio_file] 或 JSON {id, source}）
  * → {session_id, audio_url}（会话存内存）
  *
- * 审核整改 A-01/A-04/A-10：纳入鉴权 + 写守卫；id/source 字符白名单
+ * 免登录（最大限度放开，CSRF 写守卫保留）；审核整改 A-01/A-10：id/source 字符白名单
  * （消除 exec 参数注入面，见 lib/videogen.ts execFile 改造）；上传音频大小上限。
  */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -20,8 +19,6 @@ const AUDIO_EXT_WHITELIST = new Set([".mp3", ".flac", ".m4a", ".ogg", ".wav", ".
 const MAX_CUSTOM_AUDIO_BYTES = 100 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
-  const denied = requireAuth(req);
-  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
 
