@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addFrames, getSession, VideogenFrameLimitError } from "@/lib/videogen";
-import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,9 +21,6 @@ function decodeBase64Frame(dataURI: string): Buffer {
  * 或 JSON {session_id, frames:[base64], start_idx}）→ {status, received}
  */
 export async function POST(req: NextRequest) {
-  const guarded = checkWriteGuard(req);
-  if (guarded) return guarded;
-
   const contentType = req.headers.get("content-type") ?? "";
   let sessionId = "";
   let startIdx = -1;

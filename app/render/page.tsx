@@ -30,9 +30,13 @@ import {
 } from "@/lib/render-layout";
 
 const FPS = 30;
-const BATCH = 30;
+const BATCH = 60;
+/** 上传积压批数上限（背压）：慢网络下防未上传 blob 无限驻留内存（每批约 9MB） */
+const MAX_PENDING_BATCHES = 4;
 const CANVAS_W = 720;
 const CANVAS_H = 1280;
+/** 服务端单会话帧数上限（MAX_FRAMES_PER_SESSION=18000）折算的时长上限（秒） */
+const MAX_RENDER_SECONDS = 18000 / 30;
 
 const FONT_STACK = "system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif";
 const MAIN_FONT = `600 42px ${FONT_STACK}`;
@@ -189,13 +193,39 @@ function RenderPageInner() {
         // 先向上为当前行上方的块预留高度，使当前行基本居于窗口中部
         const showFrom = Math.max(0, curIdx - 2);
         for (let i = showFrom; i < curIdx; i++) y -= blocks[i].height;
+        // 歌词窗口上界：歌手行（基线 cy + r + 140）下方留出下行高度与间距，防止歌词叠上歌曲信息
+        const lyricTop = cy + r + 210;
+        if (y < lyricTop) y = lyricTop;
 
         for (let li = showFrom; li <= Math.min(blocks.length - 1, curIdx + 2); li++) {
           const block = blocks[li];
           if (y + block.height > lyricBottom && li > curIdx) break;
           const isCur = li === curIdx;
-          // 行首淡入
-          const alpha = isCur ? Math.min(1, 0.55 + (0.45 * Math.min(FADE_IN_MS, nowMs - block.time)) / FADE_IN_MS) : 1;
+
+          // 块级动效参数（全部为 t 的纯时间函数，零测量开销）
+          const inProg = Math.min(1, Math.max(0, (nowMs - block.time) / FADE_IN_MS));
+          const glow = 14 + 6 * Math.sin(t * Math.PI * 2 * 0.8); // 辉光呼吸（≈0.8Hz）
+          let alpha = 1;
+          let slideY = 0;
+          // 块级变换：当前行斜向甩入（横移+旋转）/ 刚唱完行让位退出 / 其余行景深缩小
+          let tx = 0;
+          let rot = 0;
+          let scl = 1;
+          if (isCur) {
+            alpha = Math.min(1, 0.55 + 0.45 * inProg); // 行首淡入
+            slideY = Math.pow(1 - inProg, 3) * 26; // 下方 26px easeOutCubic 滑入
+            const e = 1 - Math.pow(1 - inProg, 3);
+            tx = (1 - e) * 36; // 右侧 36px 横向甩入
+            rot = (1 - e) * -0.045; // -2.5° 斜着转正
+          } else if (curIdx >= 0 && li === curIdx - 1) {
+            // 唱完让位：250ms 内左移 14px、歪出再回正（±2.9°）、轻微压暗
+            const outP = Math.min(1, Math.max(0, (nowMs - block.end) / 250));
+            tx = -14 * (1 - Math.pow(1 - outP, 3));
+            rot = 0.05 * Math.sin(outP * Math.PI);
+            alpha = 1 - 0.15 * outP;
+          } else {
+            scl = 0.965; // 非当前行整体缩小（伪景深层级，对齐 Apple Music/AMLL 风格）
+          }
           ctx.globalAlpha = alpha;
 
           // 当前块主行渐变（跨整个歌词窗口宽度，颜色随填充位置连续）
@@ -207,7 +237,15 @@ function RenderPageInner() {
             shine.addColorStop(1, "#67e8f9");
           }
 
-          let rowY = y;
+          // 块级变换包裹整块（主行+副行一起斜向运动）
+          ctx.save();
+          const bcy = y + block.height / 2;
+          ctx.translate(W / 2 + tx, bcy);
+          ctx.rotate(rot);
+          ctx.scale(scl, scl);
+          ctx.translate(-W / 2, -bcy);
+
+          let rowY = y + slideY;
           for (const row of block.rows) {
             let x = (W - row.w) / 2;
             for (const seg of row.segs) {
@@ -216,22 +254,43 @@ function RenderPageInner() {
                 ctx.fillStyle = li < curIdx ? "rgba(255,255,255,0.26)" : "rgba(255,255,255,0.48)";
                 ctx.fillText(seg.text, x, rowY);
               } else {
-                // 底字
-                ctx.fillStyle = "rgba(255,255,255,0.36)";
-                ctx.fillText(seg.text, x, rowY);
-                // 已唱部分：按词内进度裁剪填充（karaoke 逐字）
+                // 词内进度（karaoke 逐字）
                 const p =
                   nowMs <= seg.start ? 0 : nowMs >= seg.end ? 1 : (nowMs - seg.start) / Math.max(1, seg.end - seg.start);
-                if (p > 0 && shine) {
-                  ctx.save();
-                  ctx.beginPath();
-                  ctx.rect(x, rowY - 46, seg.w * p + 0.75, 56);
-                  ctx.clip();
-                  ctx.fillStyle = shine;
-                  ctx.shadowColor = "rgba(240,171,252,0.6)";
-                  ctx.shadowBlur = 16;
+                // 逐词弹跳：被唱到的瞬间上跳 9px + 放大 10% + 左右交错摇摆，200ms 内正弦衰减
+                const since = nowMs - seg.start;
+                const bounce = p > 0 && since >= 0 ? Math.sin(Math.min(1, since / 200) * Math.PI) : 0;
+                const drawKaraoke = () => {
+                  // 底字
+                  ctx.fillStyle = "rgba(255,255,255,0.36)";
                   ctx.fillText(seg.text, x, rowY);
+                  // 已唱部分：按词内进度裁剪填充（同一变换空间，clip 视觉一致）
+                  if (p > 0 && shine) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(x, rowY - 46, seg.w * p + 0.75, 56);
+                    ctx.clip();
+                    ctx.fillStyle = shine;
+                    ctx.shadowColor = "rgba(240,171,252,0.6)";
+                    ctx.shadowBlur = glow;
+                    ctx.fillText(seg.text, x, rowY);
+                    ctx.restore();
+                  }
+                };
+                if (bounce > 0.01) {
+                  // 围绕词中心放大 + 上跳 + 摇摆（画面左半的词向右倒、右半向左倒，交错更活）
+                  const wcx = x + seg.w / 2;
+                  const wcy = rowY - 18;
+                  ctx.save();
+                  ctx.translate(wcx, wcy);
+                  ctx.rotate(0.055 * bounce * (wcx < W / 2 ? 1 : -1));
+                  const sc = 1 + 0.1 * bounce;
+                  ctx.scale(sc, sc);
+                  ctx.translate(-wcx, -wcy - 9 * bounce);
+                  drawKaraoke();
                   ctx.restore();
+                } else {
+                  drawKaraoke();
                 }
               }
               x += seg.w;
@@ -255,6 +314,7 @@ function RenderPageInner() {
             rowY += RENDER_SUB_ROW_H;
           }
 
+          ctx.restore(); // 结束块级变换
           ctx.globalAlpha = 1;
           y += block.height;
         }
@@ -295,7 +355,11 @@ function RenderPageInner() {
       initForm.append("id", song.id);
       initForm.append("source", song.source);
       if (customAudio) initForm.append("audio_file", customAudio);
-      const initResp = await fetch("/api/videogen/init", { method: "POST", body: initForm });
+      const initResp = await fetch("/api/videogen/init", {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        body: initForm,
+      });
       const initData = await initResp.json();
       if (!initResp.ok || !initData.session_id) throw new Error(initData.error ?? "init failed");
       const sessionId = initData.session_id as string;
@@ -311,9 +375,22 @@ function RenderPageInner() {
       const AC: typeof AudioContext =
         window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const actx = new AC();
-      const decoded = await actx.decodeAudioData(audioBuf);
-      const duration = decoded.duration;
-      await actx.close();
+      let duration: number;
+      try {
+        const decoded = await actx.decodeAudioData(audioBuf);
+        duration = decoded.duration;
+      } finally {
+        // 审核整改 P3-01：decode 失败也必须释放 AudioContext（浏览器有实例配额，泄漏后无法再创建）；close 自身失败不掩盖原始错误
+        await actx.close().catch(() => {});
+      }
+
+      // 与服务端 MAX_FRAMES_PER_SESSION 对齐（lib/videogen.ts：18000 帧 @30fps = 10 分钟），
+      // 超长提前报错，避免整段渲染上传后才被 413 拒绝
+      if (duration > MAX_RENDER_SECONDS) {
+        const m = Math.floor(duration / 60);
+        const s = Math.round(duration % 60);
+        throw new Error(`歌曲时长 ${m} 分 ${s} 秒，超过渲染上限 ${MAX_RENDER_SECONDS / 60} 分钟`);
+      }
 
       /* 3. 歌词（format=auto → verbatim 原文：YRC/QRC/KRC 词级时间戳 + 译文/罗马音行） */
       setStatusText("加载歌词…");
@@ -359,7 +436,7 @@ function RenderPageInner() {
       const totalFrames = Math.floor(duration * FPS);
       let uploaded = 0;
 
-      const toBlob = (quality = 0.85): Promise<Blob> =>
+      const toBlob = (quality = 0.8): Promise<Blob> =>
         new Promise((resolve, reject) => {
           canvas.toBlob(
             (b) => (b ? resolve(b) : reject(new Error("Frame encode failed"))),
@@ -368,7 +445,11 @@ function RenderPageInner() {
           );
         });
 
+      // 流水线：上传与绘制并行。上传链式保序（服务端要求 start_idx 严格递增，不可并发乱序），
+      // 消除每批 RTT 串行等待；绘制完成时上传仍在后台进行
       let batch: Blob[] = [];
+      let uploadChain: Promise<void> = Promise.resolve();
+      let pendingBatches = 0;
       for (let f = 0; f < totalFrames; f++) {
         if (cancelRef.current) {
           toast.info("已取消渲染");
@@ -384,20 +465,41 @@ function RenderPageInner() {
         }
         batch.push(await toBlob());
         if (batch.length >= BATCH || f === totalFrames - 1) {
-          const form = new FormData();
-          form.append("session_id", sessionId);
-          form.append("start_idx", String(uploaded));
-          batch.forEach((blob, i) => form.append("frames", blob, `frame_${String(uploaded + i).padStart(5, "0")}.jpg`));
-          const resp = await fetch("/api/videogen/frame", { method: "POST", body: form });
-          const data = await resp.json();
-          if (!resp.ok) throw new Error(data.error ?? "frame upload failed");
-          uploaded += batch.length;
+          const startIdx = uploaded;
+          const blobs = batch;
           batch = [];
-          setProgress(Math.round((uploaded / totalFrames) * 92));
-          setStatusText(`逐帧渲染中 ${uploaded}/${totalFrames}（约 ${Math.round((uploaded / FPS) / 60)} 分 ${Math.floor((uploaded / FPS) % 60)} 秒处）`);
+          uploaded += blobs.length;
+          pendingBatches++;
+          uploadChain = uploadChain.then(async () => {
+            try {
+              const form = new FormData();
+              form.append("session_id", sessionId);
+              form.append("start_idx", String(startIdx));
+              blobs.forEach((blob, i) =>
+                form.append("frames", blob, `frame_${String(startIdx + i).padStart(5, "0")}.jpg`),
+              );
+              const resp = await fetch("/api/videogen/frame", {
+                method: "POST",
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+                body: form,
+              });
+              const data = await resp.json();
+              if (!resp.ok) throw new Error(data.error ?? "frame upload failed");
+              const done = startIdx + blobs.length;
+              setProgress(Math.round((done / totalFrames) * 92));
+              setStatusText(
+                `逐帧渲染中 ${done}/${totalFrames}（约 ${Math.round(done / FPS / 60)} 分 ${Math.floor((done / FPS) % 60)} 秒处）`,
+              );
+            } finally {
+              pendingBatches--;
+            }
+          });
+          // 背压：积压过多时等待已入链批次消化，防慢网络下内存膨胀
+          if (pendingBatches > MAX_PENDING_BATCHES) await uploadChain;
         }
         if (f % 30 === 0) await new Promise((r) => setTimeout(r, 0)); // 让出主线程
       }
+      await uploadChain; // 等全部批次上传完成再进入 finish
 
       /* 6. finish */
       setStage("finishing");
@@ -405,7 +507,7 @@ function RenderPageInner() {
       setProgress(95);
       const finResp = await fetch("/api/videogen/finish", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
         body: JSON.stringify({ session_id: sessionId, name: `${song.artist} - ${song.name}` }),
       });
       const finData = await finResp.json();

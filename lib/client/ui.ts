@@ -1,7 +1,7 @@
 "use client";
 
 /** 前端共享 UI 工具 */
-export { coverUrl, sourceMeta, qualityTag, downloadUrl, switchSourceUrl } from "../play-url";
+export { coverUrl, sourceMeta, qualityTag, downloadUrl, switchSourceUrl, isLocalSource } from "../play-url";
 export type { SourceMeta } from "../play-url";
 
 export function fmtTimeClient(sec: number): string {

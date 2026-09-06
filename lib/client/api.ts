@@ -517,7 +517,13 @@ export function apiLocalMusic(
 export function apiUploadLocalMusic(file: File): Promise<{ status: string; track: LocalTrack }> {
   const form = new FormData();
   form.append("file", file);
-  return fetch("/api/local_music/upload", { method: "POST", body: form }).then(async (r) => {
+  /* A-15/A-28：写请求统一携带 X-Requested-With（upload 路由 checkWriteGuard 的 CSRF 同源校验要求；
+     multipart 不手设 Content-Type——boundary 由浏览器生成） */
+  return fetch("/api/local_music/upload", {
+    method: "POST",
+    headers: { "X-Requested-With": "XMLHttpRequest" },
+    body: form,
+  }).then(async (r) => {
     const body = await r.json();
     if (!r.ok) throw new Error(body?.error ?? "上传失败");
     return body;
@@ -655,26 +661,6 @@ export function apiDownloadRecords(
 
 export function apiClearDownloadRecords(): Promise<{ status: string }> {
   return delJSON("/api/downloads/records");
-}
-
-/* ---------------- 应用更新 ---------------- */
-
-export interface UpdateCheckResponse {
-  current_version: string;
-  latest_version: string;
-  update_available: boolean;
-  release_name: string;
-  release_url: string;
-  asset_name?: string;
-  asset_url?: string;
-  asset_size_mb?: number;
-  published_at?: string;
-  notes?: string;
-  error?: string;
-}
-
-export function apiAppUpdateCheck(): Promise<UpdateCheckResponse> {
-  return getJSON("/api/app_update/check");
 }
 
 /* ---------------- 系统环境状态 ---------------- */

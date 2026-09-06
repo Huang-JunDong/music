@@ -69,8 +69,6 @@
 | `POST /local_music/reindex` | 同路径 | 重建索引 |
 | `GET /api/downloads/records` + `DELETE` | 同路径 | 下载记录分页/清空 |
 | `POST /api/downloads/precheck` | 同路径 | 下载去重预检 |
-| `GET /app_update/check` | `GET /api/app_update/check` | GitHub Release 检查（版本比较+资产打分） |
-| `GET /github_proxy/test` | `GET /api/github_proxy/test` | 代理可用性测试 |
 | `POST /videogen/init·frame·finish` + `GET /videos/*` | `/api/videogen/*` | 视频生成会话（帧收集→ffmpeg 拼装） |
 | `GET/POST /setup`、`/login`、`/logout` | `/api/{setup,login,logout}` + `/login` 页 | 管理员鉴权：setup token 初始化、scrypt 密码、HMAC 会话 Cookie、指数退避防爆破；`MUSIC_DL_DISABLE_AUTH=1` 等价 Go 桌面模式跳过 |
 | （Go 无对应） | `GET /api/system/status` | 环境状态（ffmpeg 可用性/来源、下载目录、版本） |

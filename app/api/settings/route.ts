@@ -14,7 +14,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const denied = requireAuth(req);
   if (denied) {
-    return NextResponse.json(publicPlayerSettings());
+    // partial: true 标记降级响应——前端据此提示"登录已过期"，避免把缺失字段
+    // 静默渲染成默认值（用户会误以为已保存的设置"丢失"）
+    return NextResponse.json({ ...publicPlayerSettings(), partial: true });
   }
   return NextResponse.json(publicWebSettings());
 }

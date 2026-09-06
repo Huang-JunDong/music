@@ -112,6 +112,12 @@ export function sourceMeta(source: string): SourceMeta {
   );
 }
 
+/** 本地源判断（前端版，对齐服务端 lib/local-music.ts isLocalMusicSource；不 import 服务端模块） */
+export function isLocalSource(source: string): boolean {
+  const s = (source ?? "").trim();
+  return s === "local" || s === "local-file";
+}
+
 /** 音质标签：无损 / 320K / 192K / … */
 export function qualityTag(bitrate: number, ext?: string): string {
   const e = (ext ?? "").toLowerCase();

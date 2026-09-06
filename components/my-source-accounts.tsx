@@ -21,7 +21,7 @@ import { sourceMeta } from "@/lib/play-url";
 import type { QRLoginSession } from "@/lib/types";
 
 /** 可扫码登录"自己账号"的源（与设置页 LOGIN_SOURCES 对齐；qq_wx=微信通道） */
-const MINE_LOGIN_SOURCES = ["netease", "qq", "qq_wx", "kugou"];
+const MINE_LOGIN_SOURCES = ["netease", "qq", "qq_wx", "kugou", "bilibili"];
 
 type MineQRState = { source: string; session: QRLoginSession; status: "waiting" | "scanned" | "expired" };
 

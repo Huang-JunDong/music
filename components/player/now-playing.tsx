@@ -10,7 +10,7 @@ import {
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { usePlayer } from "@/lib/client/store";
-import { coverUrl, sourceMeta, switchSourceUrl, fmtSizeClient } from "@/lib/client/ui";
+import { coverUrl, sourceMeta, switchSourceUrl, fmtSizeClient, isLocalSource } from "@/lib/client/ui";
 import { fmtTimeClient } from "@/lib/client/ui";
 import { apiInspect } from "@/lib/client/api";
 import { RateMenu } from "./rate-menu";
@@ -602,7 +602,8 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
               <RateMenu rate={rate} onPick={setRate} />
-              <QualityMenu quality={qualityPref} onPick={setQualityPref} />
+              {/* 本地源音质由文件编码决定（quality 参数无效）——隐藏音质菜单避免误导 */}
+              {!isLocalSource(song.source) && <QualityMenu quality={qualityPref} onPick={setQualityPref} />}
               <button
                 onClick={cycleMode}
                 aria-label="播放模式"

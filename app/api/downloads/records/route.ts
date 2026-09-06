@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { clearDownloadRecords, getDownloadRecordPage } from "@/lib/download-record";
+import { requireAuth } from "@/lib/auth";
 import { checkWriteGuard } from "@/lib/write-guard";
 
 export const runtime = "nodejs";
@@ -68,8 +69,15 @@ export async function GET(req: NextRequest) {
   });
 }
 
-/** DELETE /api/downloads/records — 清空记录（保留去重表；免登录，仅 CSRF 写守卫） */
+/**
+ * DELETE /api/downloads/records — 清空记录（保留去重表）
+ * 权限收紧：/downloads 页匿名可访问，若 DELETE 继续免登录，任何访客都能清空全局
+ * 不可撤销数据（CSRF 守卫只防跨站，不防本站未授权用户）——改为管理员才能清空；
+ * MUSIC_DL_DISABLE_AUTH=1 桌面模式 requireAuth 全放行，单机行为不变。
+ */
 export async function DELETE(req: NextRequest) {
+  const denied = requireAuth(req);
+  if (denied) return NextResponse.json(denied.body, { status: denied.status });
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
   clearDownloadRecords();

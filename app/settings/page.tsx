@@ -14,20 +14,18 @@ import {
   Save,
   Cookie,
   SlidersHorizontal,
-  History,
   CheckCircle2,
-  XCircle,
   AlertTriangle,
   RefreshCw,
   CloudUpload,
-  GitBranch,
   ServerCog,
   KeyRound,
   Eye,
   EyeOff,
+  LogOut,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Modal, ConfirmDialog } from "@/components/modal";
+import { Modal } from "@/components/modal";
 import {
   apiGetCookies,
   apiSaveCookies,
@@ -35,12 +33,9 @@ import {
   apiCheckQRLogin,
   apiSettings,
   apiSaveSettings,
-  apiDownloadRecords,
-  apiClearDownloadRecords,
   apiSystemStatus,
   apiPasswordChange,
   type SystemStatus,
-  type DownloadRecord,
 } from "@/lib/client/api";
 import { refreshPlayerSettings } from "@/lib/client/store";
 import { sourceMeta } from "@/lib/play-url";
@@ -65,9 +60,8 @@ export default function SettingsPage() {
       <div className="flex flex-col gap-5">
         <SystemStatusCard />
         <LoginSection tick={cookieTick} onCookieChanged={refreshCookies} />
-        <CookieSection onSaved={refreshCookies} />
+        <CookieSection tick={cookieTick} onSaved={refreshCookies} />
         <PlaybackSection />
-        <DownloadsSection />
         <PasswordSection />
       </div>
     </div>
@@ -261,6 +255,7 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
   const [cookies, setCookies] = useState<Record<string, string> | null>(null);
   const [qr, setQr] = useState<QRState | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
+  const [loggingOut, setLoggingOut] = useState<string | null>(null);
   const [imgError, setImgError] = useState(false);
   const notifiedScanRef = useRef(false);
 
@@ -321,6 +316,26 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
     }
   };
 
+  /** 退出登录：空串触发服务端删键语义（setAllCookies 空值 → DELETE），清除该源已保存的服务器 Cookie */
+  const logout = async (source: string, cookieKey: string) => {
+    setLoggingOut(source);
+    try {
+      const r = await apiSaveCookies({ [cookieKey]: "" });
+      const err = (r as { error?: string }).error;
+      if (err) throw new Error(err);
+      toast.success(
+        cookieKey === "qq"
+          ? "已退出登录（QQ 与微信通道共用凭证，已一并清除）"
+          : `${sourceMeta(source).label} 已退出登录`,
+      );
+      onCookieChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "退出失败");
+    } finally {
+      setLoggingOut(null);
+    }
+  };
+
   const qrImg = qr ? qr.session.image_url || qr.session.url : "";
 
   return (
@@ -342,7 +357,7 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
           const cookieKey = s === "qq_wx" ? "qq" : s;
           const configured = Boolean(cookies && cookies[cookieKey] && cookies[cookieKey].trim());
           return (
-            <div key={s} className="flex min-h-[60px] items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2">
+            <div key={s} className="flex min-h-[60px] flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2">
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${configured ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" : "bg-zinc-600"}`}
                 aria-hidden="true"
@@ -351,13 +366,23 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
               <span className={`shrink-0 text-[11px] ${configured ? "text-emerald-300/80" : "text-zinc-500"}`}>
                 {cookies === null ? "检测中…" : configured ? "已登录" : "未登录"}
               </span>
-              <button
-                onClick={() => void openQR(s)}
-                disabled={qrLoading}
-                className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.1] bg-white/[0.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-violet-400/30 hover:text-white active:scale-95 disabled:opacity-50"
-              >
-                <QrCode className="h-3.5 w-3.5" aria-hidden="true" /> 扫码登录
-              </button>
+              {configured ? (
+                <button
+                  onClick={() => void logout(s, cookieKey)}
+                  disabled={loggingOut === s}
+                  className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/[0.07] px-3.5 text-[12px] font-medium text-red-300 transition-colors hover:bg-red-500/15 active:scale-95 disabled:opacity-50"
+                >
+                  {loggingOut === s ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <LogOut className="h-3.5 w-3.5" aria-hidden="true" />} 退出
+                </button>
+              ) : (
+                <button
+                  onClick={() => void openQR(s)}
+                  disabled={qrLoading}
+                  className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.1] bg-white/[0.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-violet-400/30 hover:text-white active:scale-95 disabled:opacity-50"
+                >
+                  <QrCode className="h-3.5 w-3.5" aria-hidden="true" /> 扫码登录
+                </button>
+              )}
             </div>
           );
         })}
@@ -416,10 +441,45 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
 
 /* ================= b) 手动 Cookie ================= */
 
-function CookieSection({ onSaved }: { onSaved: () => void }) {
+function CookieSection({ tick, onSaved }: { tick: number; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  /** 已保存到服务器的 Cookie（source → 值）：仅展开时加载，供各行展示"清除"入口 */
+  const [saved, setSaved] = useState<Record<string, string>>({});
+  const [clearing, setClearing] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    apiGetCookies()
+      .then((c) => alive && setSaved(c ?? {}))
+      .catch(() => alive && setSaved({}));
+    return () => {
+      alive = false;
+    };
+  }, [open, tick]);
+
+  /** 清除已保存 Cookie：空串触发服务端删键（setAllCookies 空值 → DELETE）；qq/qq_wx 同键一并清除 */
+  const clear = async (s: string) => {
+    const key = s === "qq_wx" ? "qq" : s;
+    setClearing(s);
+    try {
+      const r = await apiSaveCookies({ [key]: "" });
+      const err = (r as { error?: string }).error;
+      if (err) throw new Error(err);
+      toast.success(
+        key === "qq"
+          ? "已清除（QQ 与微信通道共用存储，一并清除）"
+          : `${sourceMeta(s).label} Cookie 已清除`,
+      );
+      onSaved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "清除失败");
+    } finally {
+      setClearing(null);
+    }
+  };
 
   const save = async () => {
     const body: Record<string, string> = {};
@@ -432,6 +492,10 @@ function CookieSection({ onSaved }: { onSaved: () => void }) {
     if (!Object.keys(body).length) {
       toast.info("没有填写任何 Cookie");
       return;
+    }
+    // qq 与 qq_wx 同库同键（qq）：两框都填时后者覆盖前者——显式提示避免静默丢一个
+    if ((values.qq ?? "").trim() && (values.qq_wx ?? "").trim()) {
+      toast.info("QQ 与 QQ（微信通道）同时填写：两者存同一键，仅微信通道的值会生效");
     }
     setBusy(true);
     try {
@@ -466,25 +530,41 @@ function CookieSection({ onSaved }: { onSaved: () => void }) {
       {open && (
         <div className="mt-4">
           <p className="text-xs leading-relaxed text-zinc-500">
-            从浏览器或抓包工具复制各源 Cookie 粘贴到这里（扫码登录失败时的备选方案）；留空的源不会被修改。
+            从浏览器或抓包工具复制各源 Cookie 粘贴到这里（扫码登录失败时的备选方案）；留空的源不会被修改，已保存的源可点"清除"删除。
           </p>
           <div className="mt-4">
-            {COOKIE_SOURCES.map((s) => (
-              <div key={s} className="mb-3 last:mb-0">
-                <label htmlFor={`cookie-${s}`} className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  {sourceMeta(s).label} Cookie
-                </label>
-                <textarea
-                  id={`cookie-${s}`}
-                  value={values[s] ?? ""}
-                  onChange={(e) => setValues((v) => ({ ...v, [s]: e.target.value }))}
-                  rows={2}
-                  spellCheck={false}
-                  placeholder={`粘贴 ${sourceMeta(s).label} 的 Cookie 字符串（留空则不修改）`}
-                  className="w-full resize-y rounded-xl input-shell px-3.5 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-200"
-                />
-              </div>
-            ))}
+            {COOKIE_SOURCES.map((s) => {
+              const key = s === "qq_wx" ? "qq" : s;
+              const hasSaved = Boolean(saved[key] && saved[key].trim());
+              return (
+                <div key={s} className="mb-3 last:mb-0">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <label htmlFor={`cookie-${s}`} className="block text-xs font-medium text-zinc-400">
+                      {sourceMeta(s).label} Cookie
+                      {hasSaved && <span className="ml-1.5 text-emerald-300/70">已保存</span>}
+                    </label>
+                    {hasSaved && (
+                      <button
+                        onClick={() => void clear(s)}
+                        disabled={clearing === s}
+                        className="flex h-9 shrink-0 items-center gap-1 rounded-xl border border-red-500/20 bg-red-500/[0.07] px-2.5 text-[11px] font-medium text-red-300 transition-colors hover:bg-red-500/15 active:scale-95 disabled:opacity-50"
+                      >
+                        {clearing === s ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <Trash2 className="h-3 w-3" aria-hidden="true" />} 清除
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    id={`cookie-${s}`}
+                    value={values[s] ?? ""}
+                    onChange={(e) => setValues((v) => ({ ...v, [s]: e.target.value }))}
+                    rows={2}
+                    spellCheck={false}
+                    placeholder={`粘贴 ${sourceMeta(s).label} 的 Cookie 字符串（留空则不修改）`}
+                    className="w-full resize-y rounded-xl input-shell px-3.5 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-200"
+                  />
+                </div>
+              );
+            })}
           </div>
           <div className="mt-4 flex justify-end">
             <button
@@ -518,16 +598,13 @@ interface PlaybackForm {
   webdavUsername: string;
   webdavPassword: string;
   webdavDir: string;
-  updateRepoUrl: string;
-  githubProxyEnabled: boolean;
-  githubProxyUrl: string;
 }
-
 const truthy = (v: unknown) => v === true || v === "true" || v === "1";
 
 function PlaybackSection() {
   const [form, setForm] = useState<PlaybackForm | null>(null);
   const [error, setError] = useState("");
+  const [partial, setPartial] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -553,10 +630,11 @@ function PlaybackSection() {
           webdavUsername: typeof st.webdavUsername === "string" ? st.webdavUsername : "",
           webdavPassword: "",
           webdavDir: typeof st.webdavDir === "string" ? st.webdavDir : "",
-          updateRepoUrl: typeof st.updateRepoUrl === "string" ? st.updateRepoUrl : "",
-          githubProxyEnabled: truthy(st.githubProxyEnabled),
-          githubProxyUrl: typeof st.githubProxyUrl === "string" ? st.githubProxyUrl : "",
         });
+        // 会话过期时服务端只返回播放器子集（partial）——显式提示，防止把缺失字段当成"设置丢失"
+        if (truthy((st as { partial?: unknown }).partial)) {
+          setPartial(true);
+        }
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : "读取设置失败");
@@ -566,29 +644,30 @@ function PlaybackSection() {
     };
   }, []);
 
+  const buildBody = (f: PlaybackForm): Record<string, unknown> => {
+    const body: Record<string, unknown> = {
+      autoCacheOnPlay: f.autoCacheOnPlay,
+      autoSwitchInvalidSources: f.autoSwitchInvalidSources,
+      downloadFilenameTemplate: f.downloadFilenameTemplate.trim(),
+      webPageSize: Math.max(10, Math.min(200, Number(f.webPageSize) || 30)),
+      embedDownload: f.embedDownload,
+      downloadToLocal: f.downloadToLocal,
+      downloadDir: f.downloadDir.trim(),
+      downloadConcurrency: Math.max(1, Math.min(5, Number(f.downloadConcurrency) || 3)),
+      webdavEnabled: f.webdavEnabled,
+      webdavUrl: f.webdavUrl.trim(),
+      webdavUsername: f.webdavUsername.trim(),
+      webdavDir: f.webdavDir.trim(),
+    };
+    if (f.webdavPassword) body.webdavPassword = f.webdavPassword;
+    return body;
+  };
+
   const save = async () => {
     if (!form) return;
     setBusy(true);
     try {
-      const body: Record<string, unknown> = {
-        autoCacheOnPlay: form.autoCacheOnPlay,
-        autoSwitchInvalidSources: form.autoSwitchInvalidSources,
-        downloadFilenameTemplate: form.downloadFilenameTemplate.trim(),
-        webPageSize: Math.max(10, Math.min(200, Number(form.webPageSize) || 30)),
-        embedDownload: form.embedDownload,
-        downloadToLocal: form.downloadToLocal,
-        downloadDir: form.downloadDir.trim(),
-        downloadConcurrency: Math.max(1, Math.min(16, Number(form.downloadConcurrency) || 3)),
-        webdavEnabled: form.webdavEnabled,
-        webdavUrl: form.webdavUrl.trim(),
-        webdavUsername: form.webdavUsername.trim(),
-        webdavDir: form.webdavDir.trim(),
-        updateRepoUrl: form.updateRepoUrl.trim(),
-        githubProxyEnabled: form.githubProxyEnabled,
-        githubProxyUrl: form.githubProxyUrl.trim(),
-      };
-      if (form.webdavPassword) body.webdavPassword = form.webdavPassword;
-      const r = await apiSaveSettings(body);
+      const r = await apiSaveSettings(buildBody(form));
       if (r && typeof r === "object" && typeof (r as { error?: string }).error === "string") {
         throw new Error((r as { error: string }).error);
       }
@@ -601,6 +680,23 @@ function PlaybackSection() {
       setBusy(false);
     }
   };
+
+  /**
+   * 开关即点即存（后台静默保存）：勾选状态立即落库，离开页面不再丢失；
+   * 成功不打扰（开关本身就是视觉反馈），失败才提示可改用底部按钮重试。
+   */
+  const toggleAndSave =
+    (key: "autoCacheOnPlay" | "autoSwitchInvalidSources" | "embedDownload" | "downloadToLocal" | "webdavEnabled") =>
+    (v: boolean) => {
+      if (!form) return;
+      const next = { ...form, [key]: v };
+      setForm(next);
+      apiSaveSettings(buildBody(next))
+        .then(() => refreshPlayerSettings())
+        .catch((e) => {
+          toast.error(e instanceof Error ? `自动保存失败：${e.message}` : "自动保存失败");
+        });
+    };
 
   return (
     <motion.section
@@ -626,28 +722,34 @@ function PlaybackSection() {
         </div>
       ) : (
         <>
+          {partial && (
+            <p className="mt-3 flex items-center gap-2 rounded-2xl border border-amber-400/20 bg-amber-400/[0.07] px-4 py-2.5 text-[13px] text-amber-300/90">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              登录状态已过期：当前仅显示播放相关设置，服务器下载 / WebDAV 等以重新登录后为准
+            </p>
+          )}
           <div className="mt-4 flex flex-col gap-2">
             <Toggle
               checked={form.autoCacheOnPlay}
-              onChange={(v) => setForm({ ...form, autoCacheOnPlay: v })}
+              onChange={toggleAndSave("autoCacheOnPlay")}
               label="播放时自动缓存到本地"
               hint="试听的同时把音频下载到本地音乐目录"
             />
             <Toggle
               checked={form.autoSwitchInvalidSources}
-              onChange={(v) => setForm({ ...form, autoSwitchInvalidSources: v })}
+              onChange={toggleAndSave("autoSwitchInvalidSources")}
               label="音源失效时自动换源"
               hint="播放失败时自动尝试其他音源的同一首歌"
             />
             <Toggle
               checked={form.embedDownload}
-              onChange={(v) => setForm({ ...form, embedDownload: v })}
+              onChange={toggleAndSave("embedDownload")}
               label="下载时嵌入元数据"
               hint="把歌名 / 歌手 / 专辑 / 封面 / 歌词写入音频文件（自动使用系统或内置 ffmpeg）"
             />
             <Toggle
               checked={form.downloadToLocal}
-              onChange={(v) => setForm({ ...form, downloadToLocal: v })}
+              onChange={toggleAndSave("downloadToLocal")}
               label="下载时同时保存到服务器"
               hint="浏览器下载的同时，把文件落盘到服务器下载目录（去重）"
             />
@@ -709,13 +811,13 @@ function PlaybackSection() {
                 id="setting-dl-conc"
                 type="number"
                 min={1}
-                max={16}
+                max={5}
                 value={form.downloadConcurrency}
                 onChange={(e) => setForm({ ...form, downloadConcurrency: e.target.value })}
                 placeholder="3"
                 className="h-11 w-full rounded-xl input-shell px-3.5 text-sm tabular-nums text-zinc-200"
               />
-              <p className="mt-1.5 text-[11px] text-zinc-500">1 – 16</p>
+              <p className="mt-1.5 text-[11px] text-zinc-500">1 – 5（对齐服务端上限）</p>
             </div>
           </div>
 
@@ -730,7 +832,7 @@ function PlaybackSection() {
               </div>
               <Toggle
                 checked={form.webdavEnabled}
-                onChange={(v) => setForm({ ...form, webdavEnabled: v })}
+                onChange={toggleAndSave("webdavEnabled")}
                 label="启用 WebDAV"
               />
             </div>
@@ -791,49 +893,6 @@ function PlaybackSection() {
             )}
           </div>
 
-          {/* ---------- 应用更新 ---------- */}
-          <div className="mt-5 border-t border-white/[0.07] pt-4">
-            <h3 className="flex items-center gap-2 text-[13.5px] font-bold text-zinc-200">
-              <GitBranch className="h-4 w-4 text-cyan-300" aria-hidden="true" /> 应用更新
-            </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3">
-              <div>
-                <label htmlFor="setting-repo" className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  检查更新的仓库
-                </label>
-                <input
-                  id="setting-repo"
-                  value={form.updateRepoUrl}
-                  onChange={(e) => setForm({ ...form, updateRepoUrl: e.target.value })}
-                  placeholder="https://github.com/<用户名>/<仓库名>"
-                  spellCheck={false}
-                  className="h-11 w-full rounded-xl input-shell px-3.5 text-sm text-zinc-200"
-                />
-              </div>
-              <Toggle
-                checked={form.githubProxyEnabled}
-                onChange={(v) => setForm({ ...form, githubProxyEnabled: v })}
-                label="通过代理访问 GitHub"
-                hint="国内网络无法直连 GitHub Releases 时开启"
-              />
-              {form.githubProxyEnabled && (
-                <div>
-                  <label htmlFor="setting-proxy" className="mb-1.5 block text-xs font-medium text-zinc-400">
-                    代理前缀
-                  </label>
-                  <input
-                    id="setting-proxy"
-                    value={form.githubProxyUrl}
-                    onChange={(e) => setForm({ ...form, githubProxyUrl: e.target.value })}
-                    placeholder="https://ghproxy.net/"
-                    spellCheck={false}
-                    className="h-11 w-full rounded-xl input-shell px-3.5 text-sm text-zinc-200"
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-
           <div className="mt-4 flex justify-end">
             <button
               onClick={save}
@@ -871,158 +930,4 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
       </span>
     </button>
   );
-}
-
-/* ================= d) 下载记录 ================= */
-
-function DownloadsSection() {
-  const [records, setRecords] = useState<DownloadRecord[] | null>(null);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [error, setError] = useState("");
-  const [confirmClear, setConfirmClear] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const PAGE_SIZE = 20;
-
-  const load = useCallback((p = 1) => {
-    apiDownloadRecords(p, PAGE_SIZE)
-      .then((r) => {
-        setRecords(r.records ?? []);
-        setPage(r.page ?? p);
-        setTotalPages(r.total_pages ?? 1);
-        setTotal(r.total ?? 0);
-        setError("");
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "加载下载记录失败"));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const onClear = async () => {
-    setBusy(true);
-    try {
-      const r = await apiClearDownloadRecords();
-      const err = (r as { error?: string }).error;
-      if (err) throw new Error(err);
-      toast.success("下载记录已清空");
-      setConfirmClear(false);
-      load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "清空失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <motion.section
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay: 0.15 }}
-      className="glass rounded-3xl border border-white/[0.1] p-5"
-      aria-label="下载记录"
-    >
-      <div className="flex items-center gap-2">
-        <History className="h-4 w-4 shrink-0 text-emerald-300" aria-hidden="true" />
-        <h2 className="flex-1 text-[15px] font-bold text-zinc-100">下载记录</h2>
-        {records && records.length > 0 && (
-          <button
-            onClick={() => setConfirmClear(true)}
-            disabled={busy}
-            className="flex h-11 items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/[0.07] px-3.5 text-[12px] font-medium text-red-300 transition-colors hover:bg-red-500/15 active:scale-95 disabled:opacity-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> 清空
-          </button>
-        )}
-      </div>
-
-      {error ? (
-        <p className="mt-3 flex items-center gap-2 text-[13px] text-red-300/90">
-          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" /> {error}
-        </p>
-      ) : records === null ? (
-        <div className="mt-4 flex flex-col gap-2" role="status" aria-label="加载中">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-[56px] animate-pulse rounded-xl bg-white/[0.035]" />
-          ))}
-        </div>
-      ) : records.length === 0 ? (
-        <p className="py-8 text-center text-sm text-zinc-500">暂无下载记录，去搜索页下载几首歌吧</p>
-      ) : (
-        <>
-          {total > PAGE_SIZE && (
-            <p className="mt-2 text-[11px] text-zinc-500">共 {total} 条</p>
-          )}
-          <ul className="mt-2">
-            {records.map((r) => {
-              const ok = r.Status === "success" || r.Status === "done";
-              const failed = r.Status === "failed" || r.Status === "error";
-              return (
-                <li key={r.ID} className="flex min-h-[52px] items-center gap-3 border-b border-white/[0.04] py-2 last:border-0">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-medium text-zinc-200">{r.Name || "未命名"}</p>
-                    <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
-                      <span className="min-w-0 flex-1 truncate">{r.Artist || "未知歌手"}</span>·<span className="shrink-0">{sourceMeta(r.Source).label}</span>·
-                      <span className="shrink-0">{fmtDateTime(r.CreatedAt)}</span>
-                    </p>
-                  </div>
-                  <span
-                    title={failed && r.Error ? r.Error : undefined}
-                    className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10.5px] font-medium ${
-                      ok ? "bg-emerald-500/12 text-emerald-300" : failed ? "bg-red-500/12 text-red-300" : "bg-amber-500/12 text-amber-300"
-                    }`}
-                  >
-                    {ok ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : failed ? <XCircle className="h-3 w-3" aria-hidden="true" /> : <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
-                    {ok ? "完成" : failed ? "失败" : r.Status || "进行中"}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-          {totalPages > 1 && (
-            <div className="mt-3 flex items-center justify-center gap-2">
-              <button
-                onClick={() => load(Math.max(1, page - 1))}
-                disabled={page <= 1}
-                className="flex h-10 items-center rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 text-[12.5px] text-zinc-300 transition-colors hover:bg-white/[0.07] disabled:opacity-40 active:scale-95"
-              >
-                上一页
-              </button>
-              <span className="text-xs tabular-nums text-zinc-500">
-                {page} / {totalPages} 页
-              </span>
-              <button
-                onClick={() => load(Math.min(totalPages, page + 1))}
-                disabled={page >= totalPages}
-                className="flex h-10 items-center rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 text-[12.5px] text-zinc-300 transition-colors hover:bg-white/[0.07] disabled:opacity-40 active:scale-95"
-              >
-                下一页
-              </button>
-            </div>
-          )}
-        </>
-      )}
-
-      <ConfirmDialog
-        open={confirmClear}
-        onClose={() => setConfirmClear(false)}
-        onConfirm={onClear}
-        busy={busy}
-        title="清空下载记录"
-        confirmText="清空"
-        description={<>确定清空全部 {total} 条下载记录吗？此操作不可撤销。</>}
-      />
-    </motion.section>
-  );
-}
-
-/* ---------------- 工具 ---------------- */
-
-function fmtDateTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso || "—";
-  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }

@@ -9,6 +9,8 @@ import { buildDownloadFilename, detectExtByContentType, audioMimeByExt } from ".
 import { detectExtBySignature, parseContentRangeTotal } from "../lib/range-fetch";
 import { detectAudioExtBySignature, sanitizeDownloadRelativePath } from "../lib/download-flow";
 import { normalizeWebSettings, defaultWebSettings } from "../lib/store";
+import { isLocalMusicSource, LOCAL_MUSIC_SOURCE, LEGACY_LOCAL_MUSIC_SOURCE } from "../lib/local-music";
+import { isLocalSource } from "../lib/play-url";
 import { CalcSongSimilarity, IsDurationClose } from "../lib/similarity";
 import { responseCookies } from "../lib/http";
 import { cookieToJson } from "../lib/netease/utils";
@@ -125,7 +127,7 @@ describe("sanitizeDownloadRelativePath", () => {
 });
 
 describe("normalizeWebSettings（Go normalizeWebSettings）", () => {
-  it("空值回填：dir/template/webdavDir(music-dl)/repo/proxy", () => {
+  it("空值回填：dir/template/webdavDir(music-dl)", () => {
     const s = normalizeWebSettings({
       embedDownload: false,
       downloadToLocal: false,
@@ -140,12 +142,8 @@ describe("normalizeWebSettings（Go normalizeWebSettings）", () => {
       webPageSize: 0,
       cliPageSize: 0,
       downloadConcurrency: 0,
-      autoCheckUpdate: false,
       autoSwitchInvalidSources: false,
       autoCacheOnPlay: false,
-      updateRepoUrl: "",
-      githubProxyEnabled: false,
-      githubProxyUrl: "",
       vgChangeCover: false,
       vgChangeAudio: false,
       vgChangeLyric: false,
@@ -155,7 +153,6 @@ describe("normalizeWebSettings（Go normalizeWebSettings）", () => {
     expect(s.downloadFilenameTemplate).toBe("{artist} - {name}");
     expect(s.webPageSize).toBe(200);
     expect(s.cliPageSize).toBe(20);
-    expect(s.githubProxyUrl).toBe("https://edgeone.gh-proxy.com");
   });
   it("concurrency：≤0 先回填默认 3（Go 顺序），>5 夹紧 5", () => {
     const base = defaultWebSettings();
@@ -222,5 +219,36 @@ describe("同名多域 Set-Cookie 解析（扫码登录关键 cookie 回归）",
       MUSIC_U: "token-abc",
       _ntes_nuid: "",
     });
+  });
+});
+
+describe("isLocalSource 双实现一致性（审核整改 P3-02）", () => {
+  /** 前端 lib/play-url.ts 与服务端 lib/local-music.ts 各持一份实现（客户端不 import 服务端模块），
+   *  此处以服务端常量为锚：任一侧改动来源值而另一侧未同步，本测试立即变红 */
+  const cases: Array<[string, boolean]> = [
+    [LOCAL_MUSIC_SOURCE, true],
+    [LEGACY_LOCAL_MUSIC_SOURCE, true],
+    ["netease", false],
+    ["qq", false],
+    ["kugou", false],
+    ["bilibili", false],
+    ["local2", false],
+    ["not-local", false],
+    ["", false],
+  ];
+
+  it.each(cases)("输入 %j：前端 isLocalSource 与服务端 isLocalMusicSource 结果一致（期望 %s）", (input, expected) => {
+    expect(isLocalSource(input)).toBe(expected);
+    expect(isLocalMusicSource(input)).toBe(expected);
+  });
+
+  it("空白容错语义一致：两侧均先 trim 再比较", () => {
+    expect(isLocalSource(` ${LOCAL_MUSIC_SOURCE} `)).toBe(true);
+    expect(isLocalMusicSource(` ${LOCAL_MUSIC_SOURCE} `)).toBe(true);
+  });
+
+  it("大小写敏感语义一致：非精确匹配不判为本地源", () => {
+    expect(isLocalSource(LOCAL_MUSIC_SOURCE.toUpperCase())).toBe(false);
+    expect(isLocalMusicSource(LOCAL_MUSIC_SOURCE.toUpperCase())).toBe(false);
   });
 });

@@ -16,7 +16,7 @@ export interface RenderSession {
   customAudioPath: string;
   song: { id: string; source: string };
   audioUrl: string;
-  frames: Buffer[];
+  /** 已落盘帧数（帧文件存 tempDir/frame_%05d.jpg，不驻留内存） */
   total: number;
   createdAt: number;
   lastActive: number;
@@ -51,8 +51,8 @@ export function takeSession(sessionId: string): RenderSession | null {
 
 /** 会话与帧数上限（审核 5.4 / A-06：未授权可反复 init+frame，须防内存/磁盘耗尽） */
 export const MAX_RENDER_SESSIONS = 32;
-/** 3 分钟 @30fps 上限，超出视为异常请求（正常逐字歌词渲染远小于此） */
-export const MAX_FRAMES_PER_SESSION = 5400;
+/** 10 分钟 @30fps 上限；帧由 addFrames 直接落盘 tempDir（cleanupSession/sweep 统一清理），上限防磁盘耗尽 */
+export const MAX_FRAMES_PER_SESSION = 18000;
 
 export class VideogenSessionLimitError extends Error {
   constructor() {
@@ -89,7 +89,6 @@ export function createSession(input: {
     customAudioPath: input.customAudioPath ?? "",
     song: { id: input.songId, source: input.source },
     audioUrl: input.audioUrl ?? "",
-    frames: [],
     total: 0,
     createdAt: now,
     lastActive: now,
@@ -98,7 +97,15 @@ export function createSession(input: {
   return session;
 }
 
-/** 按序追加帧（startIdx 必须等于当前总数，防止乱序/重复；总量上限防资源耗尽，审核 A-06） */
+/** 帧文件名（与 ffmpeg 输入序列 frame_%05d.jpg 对齐；5 位序号可覆盖 99999 帧） */
+function frameFilePath(session: RenderSession, idx: number): string {
+  return path.join(session.tempDir, `frame_${String(idx).padStart(5, "0")}.jpg`);
+}
+
+/**
+ * 按序追加帧：直接落盘 tempDir（长歌不再整体驻留 RAM，防内存耗尽）。
+ * startIdx 必须等于当前总数，防止乱序/重复；总量上限防磁盘耗尽（审核 A-06）。
+ */
 export function addFrames(session: RenderSession, frames: Buffer[], startIdx: number): Error | null {
   if (startIdx !== session.total) {
     return new Error(`frame batch out of order: got ${startIdx}, want ${session.total}`);
@@ -106,7 +113,15 @@ export function addFrames(session: RenderSession, frames: Buffer[], startIdx: nu
   if (session.total + frames.length > MAX_FRAMES_PER_SESSION) {
     return new VideogenFrameLimitError(MAX_FRAMES_PER_SESSION);
   }
-  for (const frame of frames) session.frames.push(frame);
+  for (let i = 0; i < frames.length; i++) {
+    try {
+      fs.writeFileSync(frameFilePath(session, session.total + i), frames[i]);
+    } catch (err) {
+      // 半批残留文件由 cleanupSession（rmSync tempDir）统一清理；
+      // total 未推进，客户端按原 start_idx 重试会覆盖同名文件，无脏数据
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  }
   session.total += frames.length;
   session.lastActive = Date.now();
   return null;
@@ -214,7 +229,7 @@ export interface RenderOptions {
   timeoutMs?: number;
 }
 
-/** 拼帧渲染 mp4：帧写临时目录 frame_%05d.jpg → ffmpeg 合成 → data/videos */
+/** 拼帧渲染 mp4：帧已由 addFrames 落盘 tempDir/frame_%05d.jpg → ffmpeg 合成 → data/videos */
 export async function renderVideo(
   session: RenderSession,
   options: RenderOptions,
@@ -222,12 +237,7 @@ export async function renderVideo(
   const ffmpeg = await resolveFFmpeg();
   if (!ffmpeg) throw new FFmpegUnavailableError();
 
-  if (session.frames.length === 0) throw new Error("no frames uploaded");
-
-  // 写帧文件
-  for (let i = 0; i < session.frames.length; i++) {
-    fs.writeFileSync(path.join(session.tempDir, `frame_${String(i).padStart(5, "0")}.jpg`), session.frames[i]);
-  }
+  if (session.total === 0) throw new Error("no frames uploaded");
 
   // 音频：自定义文件或在线下载
   let audioPath = "";
@@ -254,7 +264,9 @@ export async function renderVideo(
     "frame_%05d.jpg",
   ];
   if (audioPath) args.push("-i", audioPath);
-  args.push("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p");
+  // 视频编码必须纯软编：libx264 + ultrafast 不依赖 GPU/显卡（无显卡服务器/容器可跑），
+  // 禁止引入 nvenc/qsv/amf 等硬编分支；crf 28 降低码率（歌词画面简单无明显损失）→ 编码更快、产物更小
+  args.push("-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p");
   if (audioPath) args.push("-c:a", "aac", "-b:a", "320k", "-shortest");
   args.push(outPath);
 

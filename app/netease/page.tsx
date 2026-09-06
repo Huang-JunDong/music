@@ -116,7 +116,11 @@ export default function NeteaseConsolePage() {
     setSending(true);
     const started = performance.now();
     try {
-      const resp = await fetch(url, { method });
+      const resp = await fetch(url, {
+        method,
+        /* 写请求统一携带 XHR 头（对齐 A-15 基线；当前 netease 网关无写守卫，头部为预防性加固） */
+        ...(method === "POST" ? { headers: { "X-Requested-With": "XMLHttpRequest" } } : {}),
+      });
       const durationMs = Math.round(performance.now() - started);
       let text = await resp.text();
       try {

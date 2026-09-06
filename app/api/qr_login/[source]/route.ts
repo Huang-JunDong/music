@@ -135,14 +135,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ sou
   }
 }
 
-/** DELETE /api/qr_login/[source] — 退出"我的音源账号"（仅清浏览器会话；全局 Cookie 走设置页管理） */
+/**
+ * DELETE /api/qr_login/[source] — 退出"我的音源账号"
+ * - 所有用户：清除浏览器会话凭证（music_dl_src_<source>）
+ * - 管理员/桌面模式：登录时曾双写全局库（GET success 分支 setCookie），
+ *   退出时对称删除该全局键，避免设置页"音源登录"残留已失效的已登录状态；
+ *   访客不触碰全局库（维持原语义：全局 Cookie 由设置页管理）
+ */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ source: string }> }) {
   const guarded = checkWriteGuard(req);
   if (guarded) return guarded;
 
   const { source } = await params;
   const cookieSource = qrLoginCookieSource(source);
-  const res = NextResponse.json({ status: "ok", cookie_source: cookieSource });
+  let globalCleared = false;
+  if (authDisabled() || currentUsername(req)) {
+    try {
+      setCookie(cookieSource, ""); // 空值删键（setAllCookies 空串 → DELETE）
+      globalCleared = true;
+    } catch {
+      /* 全局库删除失败不阻断浏览器凭证清除（设置页退出按钮可兜底） */
+    }
+  }
+  const res = NextResponse.json({ status: "ok", cookie_source: cookieSource, global_cleared: globalCleared });
   res.headers.append("Set-Cookie", srcSessionClearCookie(cookieSource));
   return res;
 }

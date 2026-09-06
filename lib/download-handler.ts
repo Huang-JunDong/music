@@ -5,7 +5,6 @@
  * Range 并行分块、普通流代理（Range 透传）。路由仅做方法导出。
  */
 import fs from "node:fs";
-import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 import { getProvider, songFromParams } from "./registry";
 import { normalizeSongQuality } from "./types";
@@ -53,8 +52,47 @@ function localAudioMime(ext: string): string {
   }
 }
 
-function nodeStreamBody(stream: fs.ReadStream): ReadableStream<Uint8Array> {
-  return Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+function nodeStreamBody(stream: fs.ReadStream, signal?: AbortSignal): ReadableStream<Uint8Array> {
+  // 手动桥接替代 Readable.toWeb：toWeb 在客户端断开（cancel）后仍可能把已排队的
+  // data 事件 enqueue 到已关闭的 controller → ERR_INVALID_STATE uncaughtException。
+  // 此处所有 enqueue/close/error 均兜底，cancel/abort 即刻 destroy 源流；
+  // desiredSize 背压：下游消费不及则 pause，pull 时 resume。
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      stream.on("data", (chunk: Buffer | string) => {
+        try {
+          controller.enqueue(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+          if (controller.desiredSize !== null && controller.desiredSize <= 0) stream.pause();
+        } catch {
+          stream.destroy();
+        }
+      });
+      stream.on("end", () => {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      });
+      stream.on("error", (err) => {
+        try {
+          controller.error(err);
+        } catch {
+          /* already closed */
+        }
+      });
+      if (signal) {
+        if (signal.aborted) stream.destroy();
+        else signal.addEventListener("abort", () => stream.destroy(), { once: true });
+      }
+    },
+    pull() {
+      stream.resume();
+    },
+    cancel() {
+      stream.destroy();
+    },
+  });
 }
 
 /* ---------------- 本地音乐文件服务（对齐 serveLocalMusicDownload + ServeContent） ---------------- */
@@ -118,14 +156,14 @@ async function serveLocalMusic(req: NextRequest, id: string, saveLocal: boolean)
   if (range && range !== "invalid") {
     headers.set("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
     headers.set("Content-Length", String(range.end - range.start + 1));
-    return new NextResponse(nodeStreamBody(fs.createReadStream(absPath, { start: range.start, end: range.end })), {
+    return new NextResponse(nodeStreamBody(fs.createReadStream(absPath, { start: range.start, end: range.end }), req.signal), {
       status: 206,
       headers,
     });
   }
 
   headers.set("Content-Length", String(stat.size));
-  return new NextResponse(nodeStreamBody(fs.createReadStream(absPath)), { status: 200, headers });
+  return new NextResponse(nodeStreamBody(fs.createReadStream(absPath), req.signal), { status: 200, headers });
 }
 
 /* ---------------- 上游断流自愈（本项目特有） ---------------- */

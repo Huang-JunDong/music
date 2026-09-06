@@ -206,21 +206,14 @@ export interface WebSettings {
   webPageSize: number;
   cliPageSize: number;
   downloadConcurrency: number;
-  autoCheckUpdate: boolean;
   autoSwitchInvalidSources: boolean;
   autoCacheOnPlay: boolean;
-  updateRepoUrl: string;
-  githubProxyEnabled: boolean;
-  githubProxyUrl: string;
   vgChangeCover: boolean;
   vgChangeAudio: boolean;
   vgChangeLyric: boolean;
   vgExportVideo: boolean;
 }
 
-/** 更新检查仓库不预设默认值：避免前端默认展示第三方仓库地址，由用户自行填写 */
-export const DEFAULT_UPDATE_REPO_URL = "";
-export const DEFAULT_GITHUB_PROXY_URL = "https://edgeone.gh-proxy.com";
 export const DEFAULT_WEB_PAGE_SIZE = 200;
 export const DEFAULT_CLI_PAGE_SIZE = 20;
 export const DEFAULT_DOWNLOAD_CONCURRENCY = 3;
@@ -243,12 +236,8 @@ export function defaultWebSettings(): WebSettings {
     webPageSize: DEFAULT_WEB_PAGE_SIZE,
     cliPageSize: DEFAULT_CLI_PAGE_SIZE,
     downloadConcurrency: DEFAULT_DOWNLOAD_CONCURRENCY,
-    autoCheckUpdate: true,
     autoSwitchInvalidSources: true,
     autoCacheOnPlay: false,
-    updateRepoUrl: DEFAULT_UPDATE_REPO_URL,
-    githubProxyEnabled: false,
-    githubProxyUrl: DEFAULT_GITHUB_PROXY_URL,
     vgChangeCover: false,
     vgChangeAudio: false,
     vgChangeLyric: false,
@@ -269,8 +258,6 @@ export function normalizeWebSettings(s: WebSettings): WebSettings {
   if (!(next.cliPageSize > 0)) next.cliPageSize = DEFAULT_CLI_PAGE_SIZE;
   if (!(next.downloadConcurrency > 0)) next.downloadConcurrency = DEFAULT_DOWNLOAD_CONCURRENCY;
   next.downloadConcurrency = Math.min(5, Math.max(1, Math.trunc(next.downloadConcurrency)));
-  next.updateRepoUrl = (next.updateRepoUrl ?? "").trim() || DEFAULT_UPDATE_REPO_URL;
-  next.githubProxyUrl = (next.githubProxyUrl ?? "").trim() || DEFAULT_GITHUB_PROXY_URL;
   return next;
 }
 
@@ -307,8 +294,8 @@ export function publicWebSettings(): WebSettings {
 
 /**
  * 未登录可读的播放器相关子集（审核整改 A-12 软鉴权配套）：
- * 仅暴露免登录听歌链路必需的行为开关，剔除 webdavUrl/Username、downloadDir、
- * githubProxyUrl、updateRepoUrl 等服务器内部配置（防侦察面）。
+ * 仅暴露免登录听歌链路必需的行为开关，剔除 webdavUrl/Username、downloadDir
+ * 等服务器内部配置（防侦察面）。
  */
 export function publicPlayerSettings(): Partial<WebSettings> {
   const s = getWebSettings();

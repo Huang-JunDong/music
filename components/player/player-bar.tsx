@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { usePlayer } from "@/lib/client/store";
-import { downloadUrl, coverUrl, sourceMeta, fmtTimeClient } from "@/lib/client/ui";
+import { downloadUrl, coverUrl, sourceMeta, fmtTimeClient, isLocalSource } from "@/lib/client/ui";
 import { NowPlaying } from "./now-playing";
 import { QueueDrawer } from "./queue-drawer";
 import { RateMenu } from "./rate-menu";
@@ -219,7 +219,8 @@ export function PlayerBar() {
                 <ModeIcon className="h-[17px] w-[17px]" />
               </button>
               <RateMenu rate={rate} onPick={setRate} />
-              <QualityMenu quality={quality} onPick={setQuality} />
+              {/* 本地源音质由文件编码决定（quality 参数无效）——隐藏音质菜单避免误导 */}
+              {!isLocalSource(song?.source ?? "") && <QualityMenu quality={quality} onPick={setQuality} />}
             </div>
             <BarProgress />
           </div>
