@@ -446,6 +446,7 @@ function SearchPageInner() {
                 <PlaylistGrid
                   playlists={allPlaylists}
                   hrefOf={(p) => `/album?id=${encodeURIComponent(p.id)}&source=${p.source}`}
+                  kind="album"
                   emptyHint="没有找到相关专辑"
                 />
               </>

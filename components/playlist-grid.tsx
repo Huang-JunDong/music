@@ -12,12 +12,15 @@ export function PlaylistGrid({
   hrefOf,
   loading,
   emptyHint,
+  kind = "playlist",
 }: {
   playlists: Playlist[];
   /** 生成点击目标链接 */
   hrefOf?: (p: Playlist) => string;
   loading?: boolean;
   emptyHint?: string;
+  /** 卡片语义（无障碍标签用）：歌单网格 or 专辑搜索结果 */
+  kind?: "playlist" | "album";
 }) {
   if (loading) {
     return (
@@ -59,7 +62,7 @@ export function PlaylistGrid({
             <Link
               href={href}
               className="group block"
-              aria-label={`打开歌单 ${p.name}`}
+              aria-label={`打开${kind === "album" ? "专辑" : "歌单"} ${p.name}`}
             >
               <div className="card-glow relative aspect-square overflow-hidden rounded-2xl bg-zinc-800/80 ring-1 ring-white/[0.06] transition-all duration-300 group-hover:-translate-y-0.5 group-hover:ring-violet-400/40 group-hover:shadow-xl group-hover:shadow-fuchsia-500/10">
                 {p.cover ? (
@@ -82,7 +85,7 @@ export function PlaylistGrid({
                     {formatPlayCount(p.play_count)}
                   </span>
                 )}
-                <span className="absolute bottom-2 right-2 flex h-9 w-9 translate-y-2 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white opacity-0 shadow-lg shadow-fuchsia-500/40 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100">
+                <span className="absolute bottom-2 right-2 flex h-9 w-9 translate-y-2 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white opacity-0 shadow-lg shadow-fuchsia-500/40 transition-all duration-300 group-hover:translate-y-0 group-hover:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
                   <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
                 </span>
               </div>

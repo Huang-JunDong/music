@@ -233,7 +233,8 @@ function CategoryTab() {
   const [error, setError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
   const [source, setSource] = useState(() => categoriesCache?.find((c) => c.categories?.length)?.source ?? "");
-  const [categoryId, setCategoryId] = useState("");
+  /* null = 尚未初始化（与"全部"分类的空字符串 id 区分，空 id 是合法分类） */
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null);
   const [loadingP, setLoadingP] = useState(false);
 
@@ -259,19 +260,19 @@ function CategoryTab() {
 
   const current = useMemo(() => cats?.find((c) => c.source === source), [cats, source]);
 
-  /* 源 / 分类列表变化时：保留仍有效的选择，否则选默认（热门优先） */
+  /* 源 / 分类列表变化时：保留仍有效的选择，否则选默认（"全部"优先，其次热门） */
   useEffect(() => {
     if (!current?.categories?.length) return;
     setCategoryId((prev) =>
-      current.categories.some((c) => c.id === prev)
+      prev !== null && current.categories.some((c) => c.id === prev)
         ? prev
-        : (current.categories.find((c) => c.hot) ?? current.categories[0])?.id ?? "",
+        : (current.categories.find((c) => !c.id || c.name === "全部") ?? current.categories.find((c) => c.hot) ?? current.categories[0])?.id ?? "",
     );
   }, [source, current]);
 
-  /* 拉取某分类下歌单（带缓存） */
+  /* 拉取某分类下歌单（带缓存）；categoryId 为空串是合法的"全部"分类，后端会按全量歌单处理 */
   useEffect(() => {
-    if (!source || !categoryId) {
+    if (!source || categoryId === null) {
       setPlaylists([]);
       return;
     }

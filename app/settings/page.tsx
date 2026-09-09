@@ -41,6 +41,7 @@ import { refreshPlayerSettings } from "@/lib/client/store";
 import { sourceMeta } from "@/lib/play-url";
 import type { QRLoginSession } from "@/lib/types";
 import { PageHeader } from "@/components/page-header";
+import { QrImage } from "@/components/qr-image";
 
 /** 扫码登录源（汽水扫码未调通，已隐藏入口） */
 const LOGIN_SOURCES = ["netease", "qq", "qq_wx", "kugou", "bilibili"];
@@ -256,7 +257,6 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
   const [qr, setQr] = useState<QRState | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [loggingOut, setLoggingOut] = useState<string | null>(null);
-  const [imgError, setImgError] = useState(false);
   const notifiedScanRef = useRef(false);
 
   const load = useCallback(() => {
@@ -303,7 +303,6 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
 
   const openQR = async (source: string) => {
     setQrLoading(true);
-    setImgError(false);
     notifiedScanRef.current = false;
     try {
       const session = await apiCreateQRLogin(source);
@@ -336,7 +335,8 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
     }
   };
 
-  const qrImg = qr ? qr.session.image_url || qr.session.url : "";
+  const qrUrl = qr ? qr.session.url : "";
+  const qrImageUrl = qr ? qr.session.image_url : undefined;
 
   return (
     <motion.section
@@ -393,21 +393,12 @@ function LoginSection({ tick, onCookieChanged }: { tick: number; onCookieChanged
         {qr && (
           <div className="flex flex-col items-center gap-4 py-1">
             <div className="relative flex h-60 w-60 items-center justify-center overflow-hidden rounded-2xl bg-white p-3">
-              {!imgError ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={qrImg}
-                  alt="登录二维码"
-                  className="h-full w-full object-contain"
-                  onError={() => setImgError(true)}
-                />
-              ) : (
-                <p className="p-3 text-center text-[11px] leading-relaxed break-all text-zinc-500">
-                  二维码图片加载失败。请复制链接到对应 App 打开：
-                  <br />
-                  {qrImg}
-                </p>
-              )}
+              <QrImage
+                url={qrUrl}
+                imageUrl={qrImageUrl}
+                size={216}
+                className={qr.status === "scanned" ? "opacity-60" : ""}
+              />
               {qr.status === "expired" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-zinc-950/85 backdrop-blur-sm">
                   <p className="text-[13px] font-medium text-zinc-200">二维码已过期</p>

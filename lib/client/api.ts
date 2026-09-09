@@ -231,7 +231,14 @@ export function apiAlbumDetail(
   if (meta?.cover) p.set("cover", meta.cover);
   if (meta?.artist) p.set("creator", meta.artist);
   if (meta?.track_count) p.set("track_count", String(meta.track_count));
-  return getJSON(`/api/album?${p.toString()}`);
+  // 服务端 /api/album 返回 { album, songs }（键名为 album），此处映射到统一的 playlist 字段，
+  // 与 /api/playlist 的 { playlist, songs } 对齐，供 CollectionDetail 无差别消费
+  return getJSON<PlaylistDetailResponse & { album?: Playlist }>(`/api/album?${p.toString()}`).then((r) => {
+    if (!r.playlist && r.album) {
+      return { ...r, playlist: r.album };
+    }
+    return r;
+  });
 }
 
 /* ---------------- 发现页 ---------------- */

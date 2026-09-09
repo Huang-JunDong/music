@@ -11,6 +11,7 @@ import { motion } from "motion/react";
 import { QrCode, LogOut, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
+import { QrImage } from "@/components/qr-image";
 import {
   apiCreateQRLogin,
   apiCheckQRLogin,
@@ -106,7 +107,8 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
     }
   };
 
-  const qrImg = qr ? qr.session.image_url || qr.session.url : "";
+  const qrUrl = qr ? qr.session.url : "";
+  const qrImageUrl = qr ? qr.session.image_url : undefined;
   const loggedInCount = statuses ? MINE_LOGIN_SOURCES.filter((s) => statuses[s]).length : 0;
 
   return (
@@ -183,11 +185,11 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
         {qr && (
           <div className="flex flex-col items-center gap-3 py-2">
             <div className="relative rounded-2xl border border-white/[.08] bg-white p-3">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={qrImg}
-                alt="登录二维码"
-                className={`h-[220px] w-[220px] object-contain ${qr.status === "expired" ? "opacity-25 grayscale" : qr.status === "scanned" ? "opacity-60" : ""}`}
+              <QrImage
+                url={qrUrl}
+                imageUrl={qrImageUrl}
+                size={220}
+                className={qr.status === "expired" ? "opacity-25 grayscale" : qr.status === "scanned" ? "opacity-60" : ""}
               />
               {qr.status === "expired" && (
                 <button

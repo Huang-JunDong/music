@@ -6,7 +6,7 @@
  */
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { motion, AnimatePresence, useReducedMotion } from "motion/react";
+import { motion, AnimatePresence, useReducedMotion, MotionConfig } from "motion/react";
 import {
   Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode,
   type LucideIcon,
@@ -70,7 +70,7 @@ function NavItems({ pillLayoutId }: { pillLayoutId: string }) {
         return (
           <Fragment key={item.href}>
             {showGroup && (
-              <div className="mt-3 px-3 pb-1 text-[11px] font-semibold tracking-[0.14em] text-zinc-600">
+              <div className="mt-3 px-3 pb-1 text-[11px] font-semibold tracking-[0.14em] text-zinc-500">
                 {item.group}
               </div>
             )}
@@ -125,7 +125,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [router]);
 
-  /* 鉴权状态 + 401 全局分流 */
+  /* 鉴权状态 + 401 全局分流；监听登录页成功事件实时刷新侧边栏登录态 */
   useEffect(() => {
     const refresh = () => {
       apiAuthStatus()
@@ -138,7 +138,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       router.push("/login");
     };
     window.addEventListener("musicdl:auth-required", onAuthRequired);
-    return () => window.removeEventListener("musicdl:auth-required", onAuthRequired);
+    window.addEventListener("musicdl:auth-changed", refresh);
+    return () => {
+      window.removeEventListener("musicdl:auth-required", onAuthRequired);
+      window.removeEventListener("musicdl:auth-changed", refresh);
+    };
   }, [router]);
 
   const doLogout = useCallback(async () => {
@@ -152,7 +156,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="relative z-10 flex min-h-dvh">
+    <MotionConfig reducedMotion="user">
+      <div className="relative z-10 flex min-h-dvh">
       {/* ---------- PC 侧边栏 ---------- */}
       <aside className="sticky top-0 hidden h-dvh w-[248px] shrink-0 flex-col gap-6 border-r border-white/[0.07] bg-zinc-950/60 px-4 py-6 backdrop-blur-xl lg:flex">
         <BrandMark />
@@ -204,7 +209,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ---------- 移动左侧抽屉菜单 ---------- */}
       <MobileDrawer open={drawerOpen} onClose={closeDrawer} auth={auth} doLogout={doLogout} returnFocusRef={menuBtnRef} />
-    </div>
+      </div>
+    </MotionConfig>
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 /** 全屏播放页：大封面 + 歌词（karaoke 逐字高亮 / 行级渐变，译文+罗马音副行）+ Range 音质显示 + 完整控制 */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import {
   X, Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle,
@@ -68,32 +68,42 @@ const LyricLine = memo(function LyricLine({
 }) {
   const isActive = state === "active";
   const doSeek = () => seek(line.time / 1000);
+  const words = line.words ?? [];
   return (
     <div
       ref={isActive ? onActive : undefined}
-      className="lyric-line cursor-default select-none"
+      className="lyric-line w-full cursor-default select-none"
       onClick={doSeek}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === "Enter" && doSeek()}
       aria-label={line.text}
     >
-      {line.words?.length ? (
+      {words.length > 0 ? (
         /* karaoke 逐字高亮（YRC / QRC / KRC）：active 行逐词着色（CSS 动画驱动）。
          * 审核整改 P3-3：字号放大改为 transform scale（lg 基态 18px × 1.14 ≈ 原 20px × 1.03），
          * 过渡只动 transform——font-size 属布局属性，换行会触发两行 reflow */
         <p
-          className={`text-base font-semibold leading-snug transition-transform duration-[350ms] ease-out lg:text-lg ${
+          /* 换行阈值预留激活放大余量（移动 ×1.03 / lg ×1.14）：布局宽度恒定为容器的 1/scale，
+           * 激活 scale 放大后恰好 ≤ 歌词栏宽，长行不再视觉溢出边界；阈值不随激活态变化（零 reflow）。
+           * origin 跟随对齐方向：lg 左对齐 → origin-left（向右扩展，首字不被左侧 clip 裁掉）；
+           * 移动居中 → origin-center（两侧各扩 1.5%，容器留白足够） */
+          className={`max-w-[calc(100%/1.03)] origin-center text-base font-semibold leading-snug transition-transform duration-[350ms] ease-out lg:origin-left lg:max-w-[calc(100%/1.14)] lg:text-lg ${
             isActive
               ? `scale-[1.03] lg:scale-[1.14]${playing ? "" : " karaoke-paused"}`
               : state === "past"
                 ? "text-zinc-600"
                 : "text-zinc-500"
           }`}
-          style={{ transformOrigin: "center center" }}
         >
-          {line.words.map((w, wi) => (
-            <KaraokeWord key={wi} word={w} active={isActive} baseT={isActive ? baseT : 0} />
+          {words.map((w, wi) => (
+            /* 词间隔断点必须在两个 inline-block 词盒“之间”：
+             * CJK 词无空格（视觉紧凑），用 <wbr> 提供换行机会；拉丁词尾随空格自然可断。
+             * （空格若放在词盒内部不产生外部断点，长行会溢出容器边界） */
+            <Fragment key={wi}>
+              <KaraokeWord word={w} active={isActive} baseT={isActive ? baseT : 0} />
+              {wi < words.length - 1 && (isCjkEnding(w.text) ? <wbr /> : " ")}
+            </Fragment>
           ))}
         </p>
       ) : (
@@ -101,7 +111,7 @@ const LyricLine = memo(function LyricLine({
          * 激活时 color → transparent 过渡透出渐变；P3-3 整改：字号放大以 scale 表达（lg 18px × 1.14 ≈ 原 20px × 1.03），
          * 过渡仅 color/transform，不触发布局 */
         <p
-          className={`text-base font-semibold leading-snug transition-[color,transform] duration-[350ms] ease-out lg:text-lg ${
+          className={`max-w-[calc(100%/1.03)] origin-center text-base font-semibold leading-snug transition-[color,transform] duration-[350ms] ease-out lg:origin-left lg:max-w-[calc(100%/1.14)] lg:text-lg ${
             isActive ? "scale-[1.03] lg:scale-[1.14] text-transparent" : state === "past" ? "text-zinc-600" : "text-zinc-500"
           }`}
           style={{
@@ -137,7 +147,11 @@ const LyricLine = memo(function LyricLine({
 
 /** 卡拉 OK 词：底层暗色 + 覆盖层由 CSS animation 按词时间轴平滑填充。
  * baseT = 行激活 / seek 时的播放位置快照（ms），此后动画由浏览器插值，React 不逐帧参与。
+ * 词与词之间的间隔/断点由父级 map 渲染（词盒之间），本组件只负责词本身。
  */
+const CJK_ENDING_RE = /[\u4e00-\u9fff\u3040-\u30ff\uff66-\uff9f，。！？、…—]$/;
+const isCjkEnding = (text: string) => CJK_ENDING_RE.test(text);
+
 const KaraokeWord = memo(function KaraokeWord({
   word,
   active,
@@ -147,7 +161,6 @@ const KaraokeWord = memo(function KaraokeWord({
   active: boolean;
   baseT: number;
 }) {
-  const needsSpace = !/[\u4e00-\u9fff\u3040-\u30ff\uff66-\uff9f，。！？、…—]$/.test(word.text);
   /* --off = 未揭示比例（窗口需平移的距离）；窗口/文字双层反向平移实现零 layout 揭示 */
   let fillVars: React.CSSProperties;
   if (baseT >= word.end) {
@@ -165,7 +178,10 @@ const KaraokeWord = memo(function KaraokeWord({
     } as React.CSSProperties;
   }
   return (
-    <span className="relative inline-block">
+    /* max-w-full：整行一个 word 的 YRC 数据下，词盒是不可断的 inline-block，
+     * flex 父容器的 shrink-to-fit 会把行宽撑到 max-content 而溢出歌词栏；
+     * 限宽后词盒收缩，盒内 CJK 文本恢复正常断行 */
+    <span className="relative inline-block max-w-full">
       <span className={active ? "text-zinc-500" : undefined}>{word.text}</span>
       {active && (
         <span
@@ -179,7 +195,6 @@ const KaraokeWord = memo(function KaraokeWord({
           </span>
         </span>
       )}
-      {needsSpace ? " " : ""}
     </span>
   );
 });
@@ -659,7 +674,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
               返回唱片
             </button>
           </div>
-          <div className="lyric-mask no-scrollbar h-full overflow-y-auto px-1 pb-3 pt-14 lg:py-16">
+          <div className="lyric-mask no-scrollbar h-full overflow-x-clip overflow-y-auto px-1 pb-3 pt-14 lg:py-16">
           <motion.div
             key={mobileView}
             initial={{ opacity: 0 }}

@@ -73,6 +73,29 @@ async function autoSwitchEnabled(): Promise<boolean> {
   return playerSettingsCache?.autoSwitchInvalidSources !== false;
 }
 
+/**
+ * 替换队列第 index 项为 song，并移除其他位置的同曲条目（同源同 id）。
+ * 换源后新曲目可能与队列中既有条目重复（如"酷狗→酷我"换到酷我已在队列的歌），
+ * 不去重会导致队列渲染出现相同 React key 并在切换时重复播放同一首。
+ */
+function replaceQueueItemDedup(queue: Song[], index: number, song: Song): { queue: Song[]; index: number } {
+  const nextQueue: Song[] = [];
+  let newIndex = index;
+  for (let i = 0; i < queue.length; i++) {
+    if (i === index) {
+      nextQueue.push(song);
+      continue;
+    }
+    const s = queue[i];
+    if (s.id === song.id && s.source === song.source) {
+      if (i < index) newIndex--;
+      continue;
+    }
+    nextQueue.push(s);
+  }
+  return { queue: nextQueue, index: newIndex };
+}
+
 interface PlayerState {
   queue: Song[];
   index: number;
@@ -452,13 +475,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
       set({ switchTried: switchTried + 1 });
       const result = await fetchJSON<Song>(switchSourceUrl(song));
       if (!result || !result.id) return null;
-      // 替换队列当前位置
+      // 替换队列当前位置（并移除其他位置的同曲条目，避免队列出现重复 key）
       const { queue, index } = get();
       if (index >= 0 && index < queue.length) {
-        const nextQueue = [...queue];
-        nextQueue[index] = result;
-        set({ queue: nextQueue });
-        startSong(index);
+        const replaced = replaceQueueItemDedup(queue, index, result);
+        set({ queue: replaced.queue });
+        startSong(replaced.index);
       }
       return result;
     },
@@ -466,10 +488,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
     replaceCurrent: (song) => {
       const { queue, index } = get();
       if (index < 0 || index >= queue.length) return;
-      const nextQueue = [...queue];
-      nextQueue[index] = song;
-      set({ queue: nextQueue });
-      startSong(index);
+      const replaced = replaceQueueItemDedup(queue, index, song);
+      set({ queue: replaced.queue });
+      startSong(replaced.index);
     },
   };
 });

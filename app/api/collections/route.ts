@@ -6,16 +6,21 @@ import { checkWriteGuard } from "@/lib/write-guard";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** GET /api/collections?include_imported=1 → 全部；默认仅 manual */
+/** GET /api/collections?include_imported=1 → 全部；默认仅 manual
+ *  track_count：manual 歌单按 saved_songs 实时计数（收藏/删除即时反映），
+ *  导入歌单无本地明细，保留导入时的快照值 */
 export async function GET(req: NextRequest) {
   const db = getDB();
   const includeImported = req.nextUrl.searchParams.get("include_imported") === "1";
+  const selectSql = `
+    SELECT c.*, CASE WHEN c.kind = 'manual' OR c.kind = '' OR c.kind IS NULL
+      THEN (SELECT COUNT(*) FROM saved_songs WHERE collection_id = c.id)
+      ELSE c.track_count END AS track_count
+    FROM collections c`;
   const rows = includeImported
-    ? (db.prepare("SELECT * FROM collections ORDER BY id DESC").all() as CollectionRow[])
+    ? (db.prepare(`${selectSql} ORDER BY c.id DESC`).all() as CollectionRow[])
     : (db
-        .prepare(
-          "SELECT * FROM collections WHERE kind = 'manual' OR kind = '' OR kind IS NULL ORDER BY id DESC",
-        )
+        .prepare(`${selectSql} WHERE c.kind = 'manual' OR c.kind = '' OR c.kind IS NULL ORDER BY c.id DESC`)
         .all() as CollectionRow[]);
   return NextResponse.json(rows);
 }

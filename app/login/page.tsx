@@ -55,6 +55,8 @@ function LoginPageInner() {
     try {
       await apiLogin(username.trim(), password);
       toast.success("登录成功");
+      // 通知应用外壳（侧边栏/抽屉登录卡片）立即刷新登录态，无需手动刷新页面
+      window.dispatchEvent(new Event("musicdl:auth-changed"));
       router.replace(next);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "登录失败");
