@@ -466,6 +466,46 @@ export function apiAutoCacheOnPlay(song: Song): Promise<{ status: string }> {
   }).catch(() => ({ status: "error" }));
 }
 
+/* ---------------- 播放历史 ---------------- */
+
+/** 拉取服务端播放历史（页面加载时恢复 store；免登录可读，静默失败回退空） */
+export function apiPlayHistory(): Promise<Song[]> {
+  return getJSON<{ songs: Song[] }>("/api/history").then(
+    (r) => (Array.isArray(r?.songs) ? r.songs : []),
+    () => [],
+  );
+}
+
+/** 记录一次播放到服务端（fire-and-forget：上报失败不打断播放，本地内存历史仍有效） */
+export function apiReportPlayHistory(song: Song): Promise<void> {
+  return postJSON("/api/history", {
+    id: song.id,
+    source: song.source,
+    name: song.name,
+    artist: song.artist,
+    album: song.album,
+    album_id: song.album_id,
+    cover: song.cover,
+    duration: song.duration,
+    link: song.link,
+    size: song.size,
+    bitrate: song.bitrate,
+    ext: song.ext,
+    extra: song.extra,
+  }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+/** 清空当前会话的服务端播放历史（免登录清自己的数据；返回成败供调用方决定是否清本地，审核整改 P2-3） */
+export function apiClearPlayHistory(): Promise<boolean> {
+  return delJSON("/api/history").then(
+    () => true,
+    () => false,
+  );
+}
+
 /* ---------------- 本地音乐 ---------------- */
 
 export interface LocalTrack {

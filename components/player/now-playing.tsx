@@ -79,11 +79,13 @@ const LyricLine = memo(function LyricLine({
       aria-label={line.text}
     >
       {line.words?.length ? (
-        /* karaoke 逐字高亮（YRC / QRC / KRC）：active 行逐词着色（CSS 动画驱动） */
+        /* karaoke 逐字高亮（YRC / QRC / KRC）：active 行逐词着色（CSS 动画驱动）。
+         * 审核整改 P3-3：字号放大改为 transform scale（lg 基态 18px × 1.14 ≈ 原 20px × 1.03），
+         * 过渡只动 transform——font-size 属布局属性，换行会触发两行 reflow */
         <p
-          className={`text-base font-semibold leading-snug lg:text-lg ${
+          className={`text-base font-semibold leading-snug transition-transform duration-[350ms] ease-out lg:text-lg ${
             isActive
-              ? `scale-[1.03] lg:text-xl${playing ? "" : " karaoke-paused"}`
+              ? `scale-[1.03] lg:scale-[1.14]${playing ? "" : " karaoke-paused"}`
               : state === "past"
                 ? "text-zinc-600"
                 : "text-zinc-500"
@@ -95,31 +97,39 @@ const LyricLine = memo(function LyricLine({
           ))}
         </p>
       ) : (
-        /* 行级：原文 + 渐变高亮 */
+        /* 行级：原文 + 渐变高亮。渐变背景常驻（backgroundImage 无法从 none 平滑插值），
+         * 激活时 color → transparent 过渡透出渐变；P3-3 整改：字号放大以 scale 表达（lg 18px × 1.14 ≈ 原 20px × 1.03），
+         * 过渡仅 color/transform，不触发布局 */
         <p
-          className={`text-base font-semibold leading-snug lg:text-lg ${
-            isActive ? "scale-[1.03] text-transparent lg:text-xl" : state === "past" ? "text-zinc-600" : "text-zinc-500"
+          className={`text-base font-semibold leading-snug transition-[color,transform] duration-[350ms] ease-out lg:text-lg ${
+            isActive ? "scale-[1.03] lg:scale-[1.14] text-transparent" : state === "past" ? "text-zinc-600" : "text-zinc-500"
           }`}
-          style={
-            isActive
-              ? {
-                  backgroundImage: "linear-gradient(90deg, #c4b5fd, #f0abfc)",
-                  WebkitBackgroundClip: "text",
-                  backgroundClip: "text",
-                }
-              : undefined
-          }
+          style={{
+            backgroundImage: "linear-gradient(90deg, #c4b5fd, #f0abfc)",
+            WebkitBackgroundClip: "text",
+            backgroundClip: "text",
+          }}
         >
           {line.text}
         </p>
       )}
       {line.romaji && (
-        <p className={`mt-1 text-[12.5px] italic tracking-wide lg:text-[13.5px] ${isActive ? "text-cyan-200/80" : "text-zinc-600"}`}>
+        <p
+          className={`mt-1 text-[12.5px] italic tracking-wide transition-colors duration-[350ms] ease-out lg:text-[13.5px] ${
+            isActive ? "text-cyan-200/80" : "text-zinc-600"
+          }`}
+        >
           {line.romaji}
         </p>
       )}
       {line.translation && (
-        <p className={`mt-1 text-[13px] lg:text-sm ${isActive ? "text-fuchsia-200/90" : "text-zinc-600"}`}>{line.translation}</p>
+        <p
+          className={`mt-1 text-[13px] transition-colors duration-[350ms] ease-out lg:text-sm ${
+            isActive ? "text-fuchsia-200/90" : "text-zinc-600"
+          }`}
+        >
+          {line.translation}
+        </p>
       )}
     </div>
   );

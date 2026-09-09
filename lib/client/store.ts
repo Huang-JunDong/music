@@ -2,10 +2,11 @@
 
 /** 全局播放器状态（zustand）：队列 / 控制 / 歌词 / MediaSession / 失效跳过+自动换源 / 播放自动缓存 */
 import { create } from "zustand";
+import { toast } from "sonner";
 import type { Song, SongQuality } from "../types";
 import { parseLrcClient, type ClientLyricLine } from "../lrc-client";
 import { downloadUrl, streamUrl, lyricUrl, switchSourceUrl } from "../play-url";
-import { apiAutoCacheOnPlay } from "./api";
+import { apiAutoCacheOnPlay, apiClearPlayHistory, apiPlayHistory, apiReportPlayHistory } from "./api";
 
 export type PlayMode = "order" | "loop-one" | "shuffle";
 
@@ -111,7 +112,8 @@ interface PlayerState {
   setQuality: (q: SongQuality) => void;
   removeFromQueue: (i: number) => void;
   clearQueue: () => void;
-  clearHistory: () => void;
+  /** 清空播放历史（先服务端后本地，失败保留并 toast，见实现） */
+  clearHistory: () => Promise<void>;
   /** 失效自动换源（对齐 Go autoSwitchInvalidSources） */
   autoSwitch: (song: Song) => Promise<Song | null>;
   /** 替换队列当前位置并立即播放（手动/定向换源用；不走 play() 的"同位重播=停止"语义） */
@@ -192,6 +194,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const prevHistory = get().history;
     const history = [song, ...prevHistory.filter((h) => !(h.id === song.id && h.source === song.source))].slice(0, 100);
     set({ history });
+    // 持久化到服务端（fire-and-forget：失败不打断播放，内存历史仍有效）；
+    // 与已置顶记录同曲（loop-one 重播/再次点播）跳过上报，避免服务端 DELETE+INSERT 写放大（审核整改 P3-2）
+    const top = prevHistory[0];
+    const duplicate = !!top && top.id === song.id && top.source === song.source;
+    if (!duplicate) void apiReportPlayHistory(song);
     try {
       const el = a();
       clearQualityResume();
@@ -404,7 +411,18 @@ export const usePlayer = create<PlayerState>((set, get) => {
       }
     },
 
-    clearHistory: () => set({ history: [] }),
+    clearHistory: async () => {
+      /* 先服务端后本地（审核整改 P2-3 读己之写）：成功才清空本地，失败 toast 提示并保留，
+       * 避免本地已清、服务端未清导致刷新后历史"复活"的不一致；
+       * R2 复审：仅移除请求发出时已存在的条目——await 期间新播放的歌不被误清 */
+      const before = get().history;
+      const ok = await apiClearPlayHistory();
+      if (ok) {
+        set({ history: get().history.filter((h) => !before.some((b) => b.id === h.id && b.source === h.source)) });
+        return;
+      }
+      toast.error("清空服务端播放历史失败，请稍后重试");
+    },
 
     removeFromQueue: (i) => {
       const { queue, index } = get();
@@ -461,6 +479,16 @@ export function bindAudioEvents() {
   if (typeof window === "undefined") return;
   const el = getAudio();
   el.volume = usePlayer.getState().volume;
+
+  /* 启动时恢复服务端播放历史（刷新/重开后不再丢失）；
+   * 会话内已播但服务端响应未返回的记录置顶保留，避免恢复覆盖新数据 */
+  void apiPlayHistory().then((songs) => {
+    if (!songs.length) return;
+    const local = usePlayer
+      .getState()
+      .history.filter((h) => !songs.some((s) => s.id === h.id && s.source === h.source));
+    usePlayer.setState({ history: [...local, ...songs].slice(0, 100) });
+  });
 
   el.addEventListener("timeupdate", () => {
     usePlayer.setState({ currentTime: el.currentTime });

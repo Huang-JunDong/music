@@ -74,6 +74,20 @@ export function getDB(): Database.Database {
       lyric INTEGER NOT NULL DEFAULT 0,
       modified_at TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS play_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      /* 审核整改 P1-1：听歌记录按浏览器会话隔离（music_dl_hist_sid），访客互不可见 */
+      session_key TEXT NOT NULL DEFAULT '',
+      song_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      extra TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      artist TEXT NOT NULL DEFAULT '',
+      cover TEXT NOT NULL DEFAULT '',
+      duration INTEGER NOT NULL DEFAULT 0,
+      played_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_play_history_sid ON play_history(session_key, id);
     CREATE TABLE IF NOT EXISTS web_settings (
       k TEXT PRIMARY KEY,
       v TEXT NOT NULL
@@ -88,7 +102,18 @@ export function getDB(): Database.Database {
   `);
   migrateLegacyFavorites(_db);
   backfillCollectionDefaults(_db);
+  migratePlayHistorySessionColumn(_db);
   return _db;
+}
+
+/** play_history 会话列兜底迁移（审核整改 P1-1）：开发库可能存在无 session_key 的早期结构；
+ *  旧全局行无会话归属（任何 sid 均不可读），直接弃置——播放历史为低价值衍生数据 */
+function migratePlayHistorySessionColumn(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(play_history)").all() as { name: string }[];
+  if (cols.length === 0 || cols.some((c) => c.name === "session_key")) return;
+  db.exec("ALTER TABLE play_history ADD COLUMN session_key TEXT NOT NULL DEFAULT ''");
+  db.exec("DELETE FROM play_history");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_play_history_sid ON play_history(session_key, id)");
 }
 
 /* ---------------- legacy favorites.db 迁移 + backfill（对齐 Go InitDB） ---------------- */

@@ -68,6 +68,7 @@
 | `POST /local_music/auto_cache` | 同路径 | 播放时后台缓存 |
 | `POST /local_music/reindex` | 同路径 | 重建索引 |
 | `GET /api/downloads/records` + `DELETE` | 同路径 | 下载记录分页/清空 |
+| （Go 无对应） | `GET/POST/DELETE /api/history` | 播放历史（免登录，按浏览器会话隔离：HttpOnly 匿名 Cookie `music_dl_hist_sid`，180 天；单会话上限 100 条、保留期 90 天；POST/DELETE 需 `X-Requested-With` XHR 头） |
 | `POST /api/downloads/precheck` | 同路径 | 下载去重预检 |
 | `POST /videogen/init·frame·finish` + `GET /videos/*` | `/api/videogen/*` | 视频生成会话（帧收集→ffmpeg 拼装） |
 | `GET/POST /setup`、`/login`、`/logout` | `/api/{setup,login,logout}` + `/login` 页 | 管理员鉴权：setup token 初始化、scrypt 密码、HMAC 会话 Cookie、指数退避防爆破；`MUSIC_DL_DISABLE_AUTH=1` 等价 Go 桌面模式跳过 |
