@@ -3,12 +3,15 @@
  */
 import { getProvider } from "@/lib/registry";
 import { checkWXQRLogin } from "@/lib/providers/qq";
+import { normalizeSourceCookieString } from "./source-session";
 import type { QRLoginResult } from "@/lib/types";
 
-/** 组装 cookie 串：优先 cookie 字段，否则按 key 排序拼接 cookies map */
+export { normalizeSourceCookieString };
+
+/** 组装 cookie 串：优先 cookie 字段，否则按 key 排序拼接 cookies map；均经规范化防超限 */
 export function qrLoginCookieString(result: QRLoginResult): string {
   const direct = (result.cookie ?? "").trim();
-  if (direct) return direct;
+  if (direct) return normalizeSourceCookieString(direct);
   const cookies = result.cookies ?? {};
   const keys = Object.keys(cookies)
     .filter((k) => k.trim())
@@ -18,7 +21,7 @@ export function qrLoginCookieString(result: QRLoginResult): string {
     const value = (cookies[key] ?? "").trim();
     if (value) parts.push(`${key}=${value}`);
   }
-  return parts.join("; ");
+  return normalizeSourceCookieString(parts.join("; "));
 }
 
 /** 轮询扫码结果：qq_wx 走微信通道，其余走 provider（无能力则抛 unsupported） */

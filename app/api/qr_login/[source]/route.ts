@@ -76,6 +76,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ sour
 
   if (result && result.status === "success") {
     const cookie = qrLoginCookieString(result);
+    if (!cookie) {
+      /* 诊断：803 成功但上游零凭证（风控/账号异常）——前端会提示登录成功，
+         但 ?status=1 查不到浏览器凭证，表现为"扫码后显示未登录" */
+      console.warn(`[qr_login] ${source} 登录成功但上游未返回凭证（cookie 为空），extra=${JSON.stringify(result.extra ?? {})}`);
+    }
     if (cookie) {
       const cookieSource = qrLoginCookieSource(source);
       /* P2-02：凭证不经响应体回显——访客经 HttpOnly Set-Cookie 下发，管理员/桌面模式服务端直接写库；
@@ -98,6 +103,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ sour
       };
       const res = NextResponse.json(result);
       res.headers.append("Set-Cookie", srcSessionSetCookie(cookieSource, cookie, requestIsHttps(req)));
+      console.log(`[qr_login] ${source} 凭证已下发浏览器: len=${cookie.length}, saved=${saved}, secure=${requestIsHttps(req)}`);
       return res;
     }
   }

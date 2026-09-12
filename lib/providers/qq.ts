@@ -21,7 +21,18 @@ import type {
   QRLoginSession,
   QRLoginResult,
   SongQuality,
+  Toplist,
+  MvItem,
+  MvListOptions,
+  MvListResult,
+  Artist,
+  ArtistOverview,
+  HotSearch,
+  CommentItem,
+  CommentListResult,
+  SourceLoginProfile,
 } from "../types";
+import { UpstreamError } from "../types";
 import { firstNonEmpty } from "../http";
 import { decryptQRCHex, parseQRC, convertVerbatimLRC, defaultDisplayOrder, type QrcMultiData } from "../qrc";
 import { QQClient } from "../qq/client";
@@ -35,9 +46,41 @@ import * as qqLyric from "../qq/modules/lyric";
 import * as qqRecommend from "../qq/modules/recommend";
 import * as qqUser from "../qq/modules/user";
 import * as qqLogin from "../qq/modules/login";
+import * as qqTop from "../qq/modules/top";
+import * as qqMv from "../qq/modules/mv";
+import * as qqSinger from "../qq/modules/singer";
+import * as qqComment from "../qq/modules/comment";
+import { singerCoverUrl } from "../qq/cover";
 
 const QQ_FAVORITE_SONGS_PLAYLIST_ID = "profile:favorites";
 const QQ_PROFILE_DIR_PLAYLIST_PREFIX = "profile:dir:";
+
+/** 中文地区 → QQ GetAllocMvInfo area 枚举（15=全部 8=内地 5=港台 6=欧美 7=韩国 4=日本） */
+const QQ_MV_AREA: Record<string, number> = { 全部: 15, 内地: 8, 港台: 5, 欧美: 6, 韩国: 7, 日本: 4 };
+
+/** GetAllocMvInfo 列表条目（对齐 .ref models/mv.py MvListItem） */
+interface QqMvListItem {
+  vid?: string;
+  name?: string;
+  title?: string;
+  singers?: { name?: string }[];
+  picurl?: string;
+  playcnt?: number;
+  pubdate?: number;
+  duration?: number;
+}
+
+/** get_video_info_batch 详情条目（对齐 .ref models/mv.py MvDetail） */
+interface QqMvDetailItem {
+  name?: string;
+  cover_pic?: string;
+  duration?: number;
+  singers?: { name?: string }[];
+  playcnt?: number;
+  pubdate?: number;
+  desc?: string;
+  msg?: string;
+}
 
 /** 每次请求取当前登录态（无凭证走游客 comm） */
 function client(): QQClient {
@@ -59,6 +102,22 @@ function atoi(value: string | number): number {
   if (!/^[+-]?\d+$/.test(String(value).trim())) return 0;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+/** QQ 秒级时间戳 → 相对时间文本 */
+function relativeTimeQQ(sec: number): string {
+  if (!sec || sec <= 0) return "";
+  const ts = sec * 1000;
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return `${min}分钟前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}小时前`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}天前`;
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 /** 128/320/Flac → (size, bitrate) */
@@ -571,6 +630,771 @@ export const qq: MusicProvider = {
       },
       songs,
     };
+  },
+
+  // ---------------- 排行榜（musicToplist.Toplist） ----------------
+  // GetAll 结构对齐 .ref models/top.py：group[{groupId,groupName,toplist[{topId,title,updateTime,song[]...}]}]
+  async getToplists(): Promise<Toplist[]> {
+    const c = client();
+    const resp = (await qqTop.getCategory(c)) as {
+      group?: {
+        groupId?: number;
+        groupName?: string;
+        toplist?: {
+          topId?: number | string;
+          title?: string;
+          intro?: string;
+          period?: string;
+          updateTime?: string;
+          listenNum?: number;
+          totalNum?: number;
+          frontPicUrl?: string;
+          headPicUrl?: string;
+          /** 预览曲目（rank/title/singerName） */
+          song?: { rank?: number; title?: string; singerName?: string }[];
+        }[];
+      }[];
+    };
+
+    const toplists: Toplist[] = [];
+    for (const g of resp?.group ?? []) {
+      const groupName = (g?.groupName ?? "").trim();
+      for (const item of g?.toplist ?? []) {
+        const id = String(item?.topId ?? "").trim();
+        const name = stripEm(String(item?.title ?? "")).trim();
+        if (id === "" || id === "0" || name === "") continue;
+        const highlights = (item?.song ?? [])
+          .slice(0, 3)
+          .map((s) => {
+            const title = stripEm(String(s?.title ?? "")).trim();
+            const singer = stripEm(String(s?.singerName ?? "")).trim();
+            return singer ? `${title} - ${singer}` : title;
+          })
+          .filter(Boolean);
+        toplists.push({
+          source: "qq",
+          id,
+          name,
+          cover: normalizeQQCover(item?.frontPicUrl ?? item?.headPicUrl ?? ""),
+          update_time: (item?.updateTime ?? item?.period ?? "").trim(),
+          description: (item?.intro ?? "").trim(),
+          highlights,
+          group: groupName,
+          play_count: item?.listenNum ?? 0,
+          track_count: item?.totalNum ?? 0,
+          link: `https://y.qq.com/n/ryqq/toplist/${id}`,
+          extra: { group_id: String(g?.groupId ?? 0) },
+        });
+      }
+    }
+    if (!toplists.length) throw new Error("no toplist found");
+    return toplists;
+  },
+
+  // GetDetail：songInfoList 为完整 QQTrack（base.py Song 模型），info(data) 为榜单信息
+  async getToplistSongs(toplistId: string): Promise<Song[]> {
+    const c = client();
+    const songs: Song[] = [];
+    let page = 1;
+    for (;;) {
+      const resp = (await qqTop.getDetail(c, atoi(toplistId), { num: 100, page })) as {
+        data?: { totalNum?: number };
+        songInfoList?: QQTrack[];
+      };
+      const list = resp?.songInfoList ?? [];
+      for (const track of list) songs.push(trackToSong(track));
+      const total = resp?.data?.totalNum ?? 0;
+      if (!list.length || songs.length >= total || page >= 5) break;
+      page++;
+    }
+    return songs;
+  },
+
+  // ---------------- MV（MvService.MvInfoProServer 列表 + video.VideoDataServer 详情/链接） ----------------
+
+  async getMvList(opts: MvListOptions): Promise<MvListResult> {
+    const c = client();
+    const limit = Math.min(Math.max(opts.limit, 1), 50);
+    const areaName = (opts.area ?? "").trim() || "全部";
+    const area = QQ_MV_AREA[areaName] ?? 15;
+    const resp = (await qqMv.getMvList(c, { area, version: 7, order: 0, num: limit, page: opts.page })) as {
+      data?: { list?: QqMvListItem[]; total?: number };
+      list?: QqMvListItem[];
+    };
+    const list = resp?.data?.list ?? resp?.list ?? [];
+    const mvs: MvItem[] = [];
+    for (const item of list) {
+      const vid = String(item?.vid ?? "").trim();
+      const name = stripEm(String(item?.name ?? item?.title ?? "")).trim();
+      if (!vid || !name) continue;
+      mvs.push({
+        source: "qq",
+        id: vid,
+        name,
+        artist: (item?.singers ?? []).map((s) => stripEm(String(s?.name ?? ""))).filter(Boolean).join("、"),
+        cover: normalizeQQCover(item?.picurl ?? ""),
+        duration: item?.duration ?? 0,
+        play_count: item?.playcnt ?? 0,
+        publish_time: item?.pubdate ? new Date(item.pubdate * 1000).toISOString().slice(0, 10) : undefined,
+        link: `https://y.qq.com/n/ryqq/mv/${vid}`,
+        extra: { vid },
+      });
+    }
+    return { mvs, has_more: mvs.length >= limit };
+  },
+
+  async getMvDetail(mvId: string): Promise<MvItem> {
+    const c = client();
+    const resp = (await qqMv.getDetail(c, [mvId])) as { data?: Record<string, QqMvDetailItem> };
+    const d = resp?.data?.[mvId];
+    if (!d) throw new Error("qq mv not found");
+    const name = stripEm(String(d.name ?? "")).trim();
+    if (!name) throw new Error("qq mv not found");
+    return {
+      source: "qq",
+      id: mvId,
+      name,
+      artist: (d.singers ?? []).map((s) => stripEm(String(s?.name ?? ""))).filter(Boolean).join("、"),
+      cover: normalizeQQCover(d.cover_pic ?? ""),
+      duration: d.duration ?? 0,
+      play_count: d.playcnt ?? 0,
+      publish_time: d.pubdate ? new Date(d.pubdate * 1000).toISOString().slice(0, 10) : undefined,
+      link: `https://y.qq.com/n/ryqq/mv/${mvId}`,
+      extra: { desc: (d.desc ?? d.msg ?? "").slice(0, 500) },
+    };
+  },
+
+  async getMvUrl(mvId: string): Promise<string> {
+    const c = client();
+    const resp = (await qqMv.getMvUrls(c, [mvId])) as {
+      data?: Record<string, { mp4?: { url?: string[] }[]; hls?: { m3u8?: string; url?: string[] }[] }>;
+    };
+    const set = resp?.data?.[mvId];
+    const mp4 = set?.mp4?.[0]?.url?.[0] ?? set?.mp4?.flatMap((m) => m.url ?? []).find(Boolean);
+    const url = (mp4 ?? set?.hls?.[0]?.url?.[0] ?? "").trim();
+    if (!url) throw new Error("该 MV 暂无法播放（可能需要 VIP 或已下架）");
+    return normalizeQQCover(url);
+  },
+
+  // ---------------- 歌手主页（UnifiedHomepage 概览 + 歌曲库分页 + 相似歌手） ----------------
+
+  /** GetHomepageHeader：Info.Singer（头像/名称）+ TabDetail（歌曲/专辑/视频/简介 首屏） */
+  async getArtistOverview(artistId: string): Promise<ArtistOverview> {
+    const c = client();
+    const resp = (await qqSinger.getInfo(c, artistId)) as {
+      Status?: number;
+      Info?: {
+        Singer?: { SingerID?: number | string; SingerMid?: string; Name?: string; SingerPic?: string; SingerPMid?: string };
+        BaseInfo?: { Name?: string; Avatar?: string; BackgroundImage?: string };
+      };
+      TabDetail?: {
+        SongTab?: { List?: { songInfo?: QQTrack }[]; TotalNum?: number };
+        AlbumTab?: { AlbumList?: { totalNum?: number }[]; TotalNum?: number };
+        VideoTab?: { VideoList?: { total?: number }[]; Total?: number };
+        IntroductionTab?: { List?: { title?: string; value?: string }[] };
+      };
+    };
+    const s = resp?.Info?.Singer;
+    const name = stripEm(String(s?.Name ?? resp?.Info?.BaseInfo?.Name ?? "")).trim();
+    if (!s?.SingerMid && !name) throw new Error("qq singer not found");
+
+    const tabs = resp?.TabDetail;
+    const artist: Artist = {
+      source: "qq",
+      id: s?.SingerMid || artistId,
+      name,
+      avatar:
+        normalizeQQCover(s?.SingerPic ?? "") ||
+        normalizeQQCover(resp?.Info?.BaseInfo?.Avatar ?? "") ||
+        singerCoverUrl({ mid: s?.SingerPMid || s?.SingerMid || artistId }, 500),
+      brief: (tabs?.IntroductionTab?.List ?? [])
+        .map((seg) => `${(seg?.title ?? "").trim()}：${(seg?.value ?? "").trim()}`)
+        .filter((line) => !line.endsWith("："))
+        .join("\n")
+        .slice(0, 800),
+      song_count: tabs?.SongTab?.TotalNum ?? tabs?.SongTab?.List?.length ?? 0,
+      album_count: tabs?.AlbumTab?.TotalNum ?? tabs?.AlbumTab?.AlbumList?.length ?? 0,
+      mv_count: tabs?.VideoTab?.Total ?? tabs?.VideoTab?.VideoList?.length ?? 0,
+      link: `https://y.qq.com/n/ryqq/singer/${s?.SingerMid || artistId}`,
+      extra: { singer_id: String(s?.SingerID ?? 0) },
+    };
+
+    const topSongs = (tabs?.SongTab?.List ?? [])
+      .map((e) => e?.songInfo)
+      .filter((t): t is QQTrack => !!t)
+      .map(trackToSong);
+
+    /* 匿名请求 UnifiedHomepage 常不返回 SongTab.List：降级用歌曲库首页补"热门50" */
+    if (!topSongs.length) {
+      try {
+        const fb = (await qqSinger.getSongsList(c, artistId, 50, 1)) as {
+          songList?: { songInfo?: QQTrack }[];
+        };
+        return {
+          artist,
+          top_songs: (fb?.songList ?? [])
+            .map((e) => e?.songInfo)
+            .filter((t): t is QQTrack => !!t)
+            .map(trackToSong),
+        };
+      } catch {
+        /* 降级失败维持空列表 */
+      }
+    }
+    return { artist, top_songs: topSongs };
+  },
+
+  async getArtistSongs(artistId: string, page: number, limit: number): Promise<{ songs: Song[]; has_more: boolean }> {
+    const c = client();
+    const l = Math.min(Math.max(limit, 1), 100);
+    const resp = (await qqSinger.getSongsList(c, artistId, l, page)) as {
+      totalNum?: number;
+      songList?: { songInfo?: QQTrack }[];
+    };
+    const songs = (resp?.songList ?? [])
+      .map((e) => e?.songInfo)
+      .filter((t): t is QQTrack => !!t)
+      .map(trackToSong);
+    const total = resp?.totalNum ?? 0;
+    return { songs, has_more: songs.length >= l || (total > 0 && page * l < total) };
+  },
+
+  async getArtistAlbums(artistId: string, page: number, limit: number): Promise<{ albums: Playlist[]; has_more: boolean }> {
+    const c = client();
+    const l = Math.min(Math.max(limit, 1), 100);
+    const resp = (await qqSinger.getAlbumList(c, artistId, l, page)) as {
+      total?: number;
+      albumList?: { albumID?: number | string; albumMid?: string; albumName?: string; publishDate?: string; totalNum?: number }[];
+    };
+    const albums: Playlist[] = [];
+    for (const item of resp?.albumList ?? []) {
+      const mid = String(item?.albumMid ?? "").trim();
+      const name = stripEm(String(item?.albumName ?? "")).trim();
+      if (!mid || !name) continue;
+      albums.push({
+        source: "qq",
+        id: mid,
+        name,
+        cover: qqCover(mid),
+        track_count: item?.totalNum ?? 0,
+        play_count: 0,
+        creator: "",
+        description: (item?.publishDate ?? "").slice(0, 10),
+        link: `https://y.qq.com/n/ryqq/albumDetail/${mid}`,
+        extra: { album_mid: mid },
+      });
+    }
+    const total = resp?.total ?? 0;
+    return { albums, has_more: albums.length >= l || (total > 0 && page * l < total) };
+  },
+
+  async getArtistMvs(artistId: string, page: number, limit: number): Promise<{ mvs: MvItem[]; has_more: boolean }> {
+    const c = client();
+    const l = Math.min(Math.max(limit, 1), 50);
+    const resp = (await qqSinger.getMvList(c, artistId, l, page)) as {
+      total?: number;
+      list?: { mvid?: number | string; vid?: string; title?: string; picurl?: string; playcnt?: number; pubdate?: number; duration?: number; singerName?: string }[];
+    };
+    const mvs: MvItem[] = [];
+    for (const item of resp?.list ?? []) {
+      const vid = String(item?.vid ?? "").trim();
+      const name = stripEm(String(item?.title ?? "")).trim();
+      if (!vid || !name) continue;
+      mvs.push({
+        source: "qq",
+        id: vid,
+        name,
+        artist: stripEm(String(item?.singerName ?? "")).trim(),
+        cover: normalizeQQCover(item?.picurl ?? ""),
+        duration: item?.duration ?? 0,
+        play_count: item?.playcnt ?? 0,
+        publish_time: item?.pubdate ? new Date(item.pubdate * 1000).toISOString().slice(0, 10) : undefined,
+        link: `https://y.qq.com/n/ryqq/mv/${vid}`,
+        extra: { vid },
+      });
+    }
+    const total = resp?.total ?? 0;
+    return { mvs, has_more: mvs.length >= l || (total > 0 && page * l < total) };
+  },
+
+  async getSimilarArtists(artistId: string): Promise<Artist[]> {
+    const c = client();
+    const resp = (await qqSinger.getSimilar(c, artistId, 12)) as {
+      code?: number;
+      singerlist?: { singerId?: number | string; singerMid?: string; singerName?: string; singerPic?: string; pic_mid?: string }[];
+    };
+    return (resp?.singerlist ?? [])
+      .filter((s) => (s?.singerMid ?? "").trim())
+      .map((s) => ({
+        source: "qq",
+        id: String(s.singerMid),
+        name: stripEm(String(s?.singerName ?? "")).trim(),
+        avatar:
+          normalizeQQCover(s?.singerPic ?? "") || singerCoverUrl({ pmid: s?.pic_mid, mid: s.singerMid }, 300),
+        link: `https://y.qq.com/n/ryqq/singer/${s.singerMid}`,
+      }));
+  },
+
+  // ---------------- 搜索增强（HotkeyService 热搜 · SmartBox 联想 · SINGER 类型搜索） ----------------
+
+  async getHotSearches(): Promise<HotSearch[]> {
+    const c = client();
+    const resp = (await qqSearch.getHotkey(c)) as {
+      vec_hotkey?: { query?: string; score?: string | number; pic_url?: string; cover_pic_url?: string; need_top?: number }[];
+    };
+    const out: HotSearch[] = [];
+    for (const item of resp?.vec_hotkey ?? []) {
+      const keyword = (item?.query ?? "").trim();
+      if (!keyword) continue;
+      out.push({
+        source: "qq",
+        keyword,
+        score: atoi(String(item?.score ?? "0")),
+        cover: normalizeQQCover(item?.cover_pic_url ?? item?.pic_url ?? ""),
+      });
+      if (out.length >= 20) break;
+    }
+    return out;
+  },
+
+  async getSearchSuggest(keyword: string): Promise<string[]> {
+    const q = keyword.trim();
+    if (!q) return [];
+    const c = client();
+    const resp = (await qqSearch.complete(c, q)) as {
+      data?: {
+        item?: { hint?: string }[];
+        items?: { hint?: string }[];
+        vec_related_items?: { hint?: string }[];
+      };
+    };
+    /* 上游字段名多变（item / items / vec_related_items），合并去重 */
+    const raw = [...(resp?.data?.items ?? []), ...(resp?.data?.item ?? []), ...(resp?.data?.vec_related_items ?? [])];
+    return raw
+      .map((m) => stripEm(String(m?.hint ?? "")).trim())
+      .filter(Boolean)
+      .filter((k, i, arr) => arr.indexOf(k) === i)
+      .slice(0, 8);
+  },
+
+  async searchArtists(keyword: string): Promise<Artist[]> {
+    const q = keyword.trim();
+    if (!q) return [];
+    const c = client();
+    const resp = (await qqSearch.searchByType(c, q, {
+      searchType: qqSearch.SearchType.SINGER,
+      num: 8,
+      highlight: false,
+    })) as {
+      body?: {
+        /* SINGER 类型实际返回 body.singer[]（body.item_singer 不存在） */
+        singer?: { singerID?: number | string; singerMID?: string; singerName?: string; singerPic?: string }[];
+        item_singer?: { singerID?: number | string; singerMID?: string; singerName?: string; singerPic?: string }[];
+      };
+    };
+    return (resp?.body?.singer ?? resp?.body?.item_singer ?? [])
+      .filter((s) => (s?.singerMID ?? "").trim())
+      .map((s) => ({
+        source: "qq",
+        id: String(s.singerMID),
+        name: stripEm(String(s?.singerName ?? "")).trim(),
+        avatar: normalizeQQCover(s?.singerPic ?? "") || singerCoverUrl({ mid: s.singerMID }, 300),
+        link: `https://y.qq.com/n/ryqq/singer/${s.singerMID}`,
+      }));
+  },
+
+  // ---------------- 新碟架（newalbum.NewAlbumServer · FavAlbum 收藏列表/收藏切换） ----------------
+
+  /** 中文地区 → QQ area 枚举（1=内地 2=港台 3=欧美 4=韩国 5=日本；QQ 无"全部"，全部/华语均映射内地） */
+  async getNewAlbums(opts): Promise<{ albums: Playlist[]; has_more: boolean }> {
+    const c = client();
+    const l = Math.min(Math.max(opts.limit, 1), 100);
+    const areaMap: Record<string, number> = { 全部: 1, 华语: 1, 内地: 1, 港台: 2, 欧美: 3, 韩国: 4, 日本: 5 };
+    const area = areaMap[(opts.area ?? "全部").trim()] ?? 1;
+    const resp = (await qqAlbum.getNewAlbum(c, area, l, opts.page)) as {
+      total?: number;
+      albums?: {
+        /* 上游实际为短命名（id/mid/name/release_time），兼容长命名变体 */
+        id?: number | string;
+        albumID?: number | string;
+        mid?: string;
+        albumMid?: string;
+        name?: string;
+        albumName?: string;
+        singers?: { name?: string }[];
+        release_time?: string;
+        publishDate?: string;
+        totalNum?: number;
+      }[];
+    };
+    const albums: Playlist[] = [];
+    for (const a of resp?.albums ?? []) {
+      const mid = String(a?.mid ?? a?.albumMid ?? "").trim();
+      const name = stripEm(String(a?.name ?? a?.albumName ?? "")).trim();
+      if (!mid || !name) continue;
+      albums.push({
+        source: "qq",
+        id: mid,
+        name,
+        cover: qqCover(mid),
+        track_count: a?.totalNum ?? 0,
+        play_count: 0,
+        creator: (a?.singers ?? []).map((s) => stripEm(String(s?.name ?? ""))).join("、"),
+        description: (a?.release_time ?? a?.publishDate ?? "").slice(0, 10),
+        link: `https://y.qq.com/n/ryqq/albumDetail/${mid}`,
+        extra: { album_mid: mid, album_id: String(a?.id ?? a?.albumID ?? 0) },
+      });
+    }
+    const total = resp?.total ?? 0;
+    return { albums, has_more: albums.length >= l || (total > 0 && opts.page * l < total) };
+  },
+
+  async getFavAlbums(page: number, limit: number): Promise<{ albums: Playlist[]; has_more: boolean }> {
+    const c = client();
+    const cred = c.credential;
+    if (!cred.encryptUin) throw new Error("收藏专辑需要登录QQ音乐账号");
+    const l = Math.min(Math.max(limit, 1), 100);
+    const resp = (await qqUser.getFavAlbum(c, cred.encryptUin, { page, num: l })) as {
+      total?: number;
+      hasmore?: number | boolean;
+      v_list?: { albumID?: number | string; albumMid?: string; albumName?: string; v_singer?: { name?: string }[]; songnum?: number; pubtime?: number }[];
+    };
+    const albums: Playlist[] = [];
+    for (const a of resp?.v_list ?? []) {
+      const mid = String(a?.albumMid ?? "").trim();
+      const name = stripEm(String(a?.albumName ?? "")).trim();
+      if (!mid || !name) continue;
+      albums.push({
+        source: "qq",
+        id: mid,
+        name,
+        cover: qqCover(mid),
+        track_count: a?.songnum ?? 0,
+        play_count: 0,
+        creator: (a?.v_singer ?? []).map((s) => stripEm(String(s?.name ?? ""))).join("、"),
+        description: a?.pubtime ? new Date(a.pubtime * 1000).toISOString().slice(0, 10) : "",
+        link: `https://y.qq.com/n/ryqq/albumDetail/${mid}`,
+        extra: { album_mid: mid, album_id: String(a?.albumID ?? 0) },
+      });
+    }
+    const hasMore = resp?.hasmore === true || resp?.hasmore === 1;
+    return { albums, has_more: hasMore || albums.length >= l };
+  },
+
+  async subAlbum(album, sub: boolean): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("收藏专辑需要登录QQ音乐账号");
+    const idNum = atoi(album.extra?.album_id ?? album.id);
+    if (!idNum) throw new Error("qq album fav requires numeric album_id");
+    const ok = sub ? await qqAlbum.favAlbum(c, [idNum]) : await qqAlbum.delFavAlbum(c, [idNum]);
+    if (ok === false) throw new Error("操作失败");
+  },
+
+  // ---------------- 红心（我喜欢歌单 dirid=201：addSongs/delSongs 通道） ----------------
+
+  async getLikeList(): Promise<string[]> {
+    try {
+      const c = client();
+      const cred = c.credential;
+      if (!cred.encryptUin) return [];
+      const resp = (await qqUser.getFavSong(c, cred.encryptUin, { num: 500, page: 1 })) as SonglistRaw;
+      return (resp?.songlist ?? [])
+        .map((t) => String(t?.mid ?? "").trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  },
+
+  async likeSong(song, like): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("红心需要登录QQ音乐账号");
+    const songId = atoi(song.extra?.song_id ?? song.id);
+    if (!songId) throw new Error("qq like requires numeric song_id");
+    const pairs: [number, number][] = [[songId, 0]];
+    const ok = like ? await qqSonglist.likeSong(c, pairs) : await qqSonglist.unlikeSong(c, pairs);
+    if (ok === false) throw new Error("操作失败");
+  },
+
+  // ---------------- 歌曲评论（CommentRead 热评/最新 · CommentWrite 发表） ----------------
+  // QQ 评论 bizId 用数字 song_id（Song.extra.song_id）；响应 CommentList.Comments[*]（对齐 .ref models/comment.py）
+
+  async getSongComments(song, opts): Promise<CommentListResult> {
+    const bizId = atoi(song.extra?.song_id ?? song.id);
+    if (!bizId) throw new Error("qq comment requires numeric song_id");
+    const c = client();
+    const l = Math.min(Math.max(opts.limit, 1), 50);
+    const fn = opts.sort === "hot" ? qqComment.getHotComments : qqComment.getNewComments;
+    const resp = (await fn(c, bizId, { pageNum: opts.page, pageSize: l })) as {
+      CommentList?: {
+        Comments?: {
+          CmId?: string | number;
+          Nick?: string;
+          Avatar?: string;
+          Content?: string;
+          PubTime?: number;
+          PraiseNum?: number;
+          ReplyCnt?: number;
+          SubComments?: { CmId?: string; Nick?: string; Content?: string }[];
+        }[];
+      };
+      commenttotal?: number;
+      CommentTotal?: number;
+      hasmore?: number | boolean;
+      HasMore?: number | boolean;
+    };
+    const comments: CommentItem[] = [];
+    for (const item of resp?.CommentList?.Comments ?? []) {
+      const id = String(item?.CmId ?? "").trim();
+      const content = stripEm(String(item?.Content ?? "")).trim();
+      if (!id || !content) continue;
+      const sub = item?.SubComments?.[0];
+      comments.push({
+        id,
+        content,
+        user: stripEm(String(item?.Nick ?? "")).trim() || "QQ用户",
+        avatar: normalizeQQCover(item?.Avatar ?? ""),
+        time: item?.PubTime ? relativeTimeQQ(item.PubTime) : "",
+        liked_count: item?.PraiseNum ?? 0,
+        reply_to: sub?.Nick ? { user: stripEm(String(sub.Nick)), content: stripEm(String(sub?.Content ?? "")).slice(0, 120) } : undefined,
+      });
+    }
+    const total = resp?.commenttotal ?? resp?.CommentTotal ?? comments.length;
+    const hasMore = resp?.hasmore === true || resp?.hasmore === 1 || resp?.HasMore === true || resp?.HasMore === 1;
+    return { comments, total, has_more: hasMore || (comments.length >= l && total > opts.page * l) };
+  },
+
+  async addSongComment(song, content, replyTo?): Promise<void> {
+    const bizId = atoi(song.extra?.song_id ?? song.id);
+    if (!bizId) throw new Error("qq comment requires numeric song_id");
+    const c = client();
+    await qqComment.addComment(c, bizId, content, {
+      replyCmtId: replyTo ?? null,
+    });
+  },
+
+  /** 删除自己的评论（DeleteComment；上游仅允许删本人评论） */
+  async deleteSongComment(song, commentId: string): Promise<void> {
+    const cmId = commentId.trim();
+    if (!cmId) throw new Error("qq delete comment requires comment_id");
+    const c = client();
+    await qqComment.deleteComment(c, cmId);
+  },
+
+  // ---------------- 手机号登录（PhoneLogin：验证码发送/鉴权 + Homepage 档案 + 注销） ----------------
+
+  /** 注销 QQ 账号凭证（login/logout；未登录静默跳过；本地 credential 清理由路由层负责） */
+  async logout(): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) return;
+    await qqLogin.logout(c, c.credential);
+  },
+
+  async getLoginProfile(): Promise<SourceLoginProfile> {
+    try {
+      const c = client();
+      if (!c.credential.encryptUin) return { logged_in: false };
+      const resp = (await qqUser.getHomepage(c, c.credential.encryptUin)) as {
+        head?: { nick?: string; picurl?: string };
+      };
+      const nick = stripEm(String(resp?.head?.nick ?? "")).trim();
+      return nick
+        ? { logged_in: true, nickname: nick, avatar: normalizeQQCover(resp?.head?.picurl ?? "") }
+        : { logged_in: true };
+    } catch {
+      return { logged_in: false };
+    }
+  },
+
+  async sendPhoneCode(phone: string, countryCode?: number): Promise<void> {
+    const c = client();
+    const n = Number(phone.replace(/\D/g, ""));
+    const result = await qqLogin.sendAuthcode(c, n, countryCode ?? 86);
+    if (result.event === "CAPTCHA") {
+      throw new UpstreamError("触发安全验证，请改用扫码登录");
+    }
+    if (result.event !== "SEND") {
+      throw new UpstreamError("验证码发送过于频繁，请稍后再试");
+    }
+  },
+
+  async loginByPhoneCode(phone: string, code: string): Promise<string> {
+    const c = client();
+    const n = Number(phone.replace(/\D/g, ""));
+    const cred = await qqLogin.phoneAuthorize(c, n, code);
+    /* 保存凭证（会话抑制由路由层控制：匿名时仅浏览器） */
+    saveCredential(cred);
+    return credentialToCookie(cred);
+  },
+
+  // ---------------- 歌单管理（PlaylistBaseWrite/DetailWrite：创建/删除/增删曲目，需登录） ----------------
+
+  async createPlaylist(name: string): Promise<string> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("创建歌单需要登录QQ音乐账号");
+    const resp = (await qqSonglist.create(c, name)) as { code?: number; dirid?: number | string };
+    const dirid = Number(resp?.dirid ?? 0);
+    if (!dirid) throw new Error(`创建失败 (code: ${resp?.code ?? 0})`);
+    return String(dirid);
+  },
+
+  async deletePlaylist(playlistId: string): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("删除歌单需要登录QQ音乐账号");
+    const resp = (await qqSonglist.del(c, atoi(playlistId))) as { dirid?: number };
+    if (Number(resp?.dirid ?? 0) === 0) throw new Error("删除失败（歌单不存在或权限不足）");
+  },
+
+  async addSongsToPlaylist(playlistId: string, songs: Song[]): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("需要登录QQ音乐账号");
+    const pairs: [number, number][] = songs
+      .map((s) => atoi(s.extra?.song_id ?? s.id))
+      .filter((id) => id > 0)
+      .map((id) => [id, 0]);
+    if (!pairs.length) throw new Error("缺少有效的数字 song_id");
+    const ok = await qqSonglist.addSongs(c, atoi(playlistId), pairs);
+    if (ok === false) throw new Error("歌曲已在歌单中");
+  },
+
+  async removeSongsFromPlaylist(playlistId: string, songs: Song[]): Promise<void> {
+    const c = client();
+    if (!c.credential.encryptUin) throw new Error("需要登录QQ音乐账号");
+    const pairs: [number, number][] = songs
+      .map((s) => atoi(s.extra?.song_id ?? s.id))
+      .filter((id) => id > 0)
+      .map((id) => [id, 0]);
+    if (!pairs.length) throw new Error("缺少有效的数字 song_id");
+    await qqSonglist.delSongs(c, atoi(playlistId), pairs);
+  },
+
+  // ---------------- 歌手库（SingerList：地区/性别/字母索引分页） ----------------
+
+  /** 统一筛选 → QQ 枚举（AreaType/SexType/IndexType 对齐 modules/singer.ts） */
+  async getArtistLibrary(opts): Promise<{ artists: Artist[]; has_more: boolean }> {
+    const c = client();
+    const l = Math.min(Math.max(opts.limit, 1), 100);
+    const areaMap: Record<string, number> = {
+      全部: qqSinger.AreaType.ALL,
+      华语: qqSinger.AreaType.CHINA,
+      港台: qqSinger.AreaType.TAIWAN,
+      欧美: qqSinger.AreaType.AMERICA,
+      日本: qqSinger.AreaType.JAPAN,
+      韩国: qqSinger.AreaType.KOREA,
+    };
+    const sexMap: Record<string, number> = {
+      全部: qqSinger.SexType.ALL,
+      男: qqSinger.SexType.MALE,
+      女: qqSinger.SexType.FEMALE,
+      组合: qqSinger.SexType.GROUP,
+    };
+    const area = areaMap[opts.area] ?? qqSinger.AreaType.ALL;
+    const sex = sexMap[opts.sex] ?? qqSinger.SexType.ALL;
+    const index = /^[a-zA-Z]$/.test(opts.initial)
+      ? (qqSinger.IndexType as Record<string, number>)[opts.initial.toUpperCase()]
+      : opts.initial === "#"
+        ? qqSinger.IndexType.HASH
+        : qqSinger.IndexType.ALL;
+
+    const resp = (await qqSinger.getSingerListIndex(c, {
+      area,
+      sex,
+      index,
+      page: opts.page,
+      num: l,
+    })) as {
+      singers?: { singer_id?: number | string; singer_mid?: string; singer_name?: string; singer_pic?: string; country?: string }[];
+      singerlist?: { singer_id?: number | string; singer_mid?: string; singer_name?: string; singer_pic?: string }[];
+      total?: number;
+      more?: boolean | number;
+      hasNext?: number | boolean;
+    };
+    const raw = resp?.singers ?? resp?.singerlist ?? [];
+    const artists: Artist[] = [];
+    for (const s of raw) {
+      const mid = String(s?.singer_mid ?? "").trim();
+      const name = stripEm(String(s?.singer_name ?? "")).trim();
+      if (!mid || !name) continue;
+      artists.push({
+        source: "qq",
+        id: mid,
+        name,
+        avatar: normalizeQQCover(s?.singer_pic ?? "") || singerCoverUrl({ mid }, 300),
+        link: `https://y.qq.com/n/ryqq/singer/${mid}`,
+        extra: { singer_id: String(s?.singer_id ?? 0) },
+      });
+    }
+    const hasMore =
+      resp?.more === true || resp?.more === 1 || resp?.hasNext === true || resp?.hasNext === 1 || artists.length >= l;
+    return { artists, has_more: hasMore };
+  },
+
+  // ---------------- 相似推荐（TrackRelationServer：相似歌曲 + 相关歌单） ----------------
+
+  async getSimilarSongs(song): Promise<Song[]> {
+    const c = client();
+    const songId = atoi(song.extra?.song_id ?? song.id);
+    if (!songId) throw new Error("qq similar requires numeric song_id");
+    /* GetSimilarSongs：vecSongNew[].songs[].track（对齐 .ref models/song.py jsonpath） */
+    const resp = (await qqSong.getSimilarSong(c, songId)) as {
+      vecSongNew?: { songs?: { track?: QQTrack }[] }[];
+    };
+    const tracks = (resp?.vecSongNew ?? []).flatMap((g) => (g?.songs ?? []).map((e) => e?.track));
+    return tracks.filter((t): t is QQTrack => !!t).map(trackToSong).slice(0, 12);
+  },
+
+  async getRelatedPlaylists(song): Promise<Playlist[]> {
+    const c = client();
+    const songId = atoi(song.extra?.song_id ?? song.id);
+    if (!songId) throw new Error("qq related songlist requires numeric song_id");
+    const resp = (await qqSong.getRelatedSonglist(c, songId, null)) as {
+      songlist?: ({ basic?: { dissid?: string | number; dissname?: string; picurl?: string; logo?: string; song_cnt?: number; listen_num?: number } })[];
+    };
+    const playlists: Playlist[] = [];
+    for (const item of resp?.songlist ?? []) {
+      const b = item?.basic ?? {};
+      const id = String(b.dissid ?? "").trim();
+      const name = stripEm(String(b.dissname ?? "")).trim();
+      if (!id || !name) continue;
+      playlists.push({
+        source: "qq",
+        id,
+        name,
+        cover: normalizeQQCover(b.picurl ?? b.logo ?? ""),
+        track_count: b.song_cnt ?? 0,
+        play_count: b.listen_num ?? 0,
+        creator: "",
+        description: "",
+        link: `https://y.qq.com/n/ryqq/playlist/${id}`,
+      });
+    }
+    return playlists.slice(0, 9);
+  },
+
+  // ---------------- 首页发现（RecommendNewsong 新歌速递；banner/每日推荐网易专属） ----------------
+
+  async getNewSongs(): Promise<Song[]> {
+    const c = client();
+    const resp = (await qqRecommend.getRecommendNewsong(c, 5)) as {
+      songlist?: QQTrack[];
+    };
+    return (resp?.songlist ?? []).map(trackToSong);
+  },
+
+  // ---------------- 私人电台（RadarRecommend 雷达推荐作 FM 曲库） ----------------
+
+  async getFmSongs(): Promise<Song[]> {
+    const c = client();
+    const resp = (await qqRecommend.getRadarRecommend(c, 1)) as {
+      VecSongs?: { Track?: QQTrack }[];
+      HasMore?: boolean;
+    };
+    const songs = (resp?.VecSongs ?? [])
+      .map((e) => e?.Track)
+      .filter((t): t is QQTrack => !!t)
+      .map(trackToSong);
+    if (!songs.length) throw new Error("qq radar recommend empty");
+    return songs;
   },
 
   // ---------------- 推荐歌单（PlaylistSquare.GetRecommendFeed） ----------------

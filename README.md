@@ -75,6 +75,29 @@
 | （Go 无对应） | `GET /api/system/status` | 环境状态（ffmpeg 可用性/来源、下载目录、版本） |
 | 页面路由 `/recommend` `/playlist` `/my_collections` 等 | 前端页面 `/explore` `/playlist` `/collections` 等 | Go 的 HTML 渲染页由 SPA 页面承担，语义对应 |
 
+### 音源功能扩展路由（Go 无对应 · 2026-09 批次）
+
+> 全部为音源功能面接口：免管理端登录，按**浏览器级源凭证会话**（HttpOnly `music_dl_src_<source>`）隔离数据，缓存 key 附凭证指纹防跨账号串数据；写操作（POST/DELETE）需 `X-Requested-With` XHR 头 + 同源。聚合接口单源失败不影响其余源（`Promise.allSettled`），失败结果不缓存。
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/api/toplists` / `/api/toplist` | GET | 榜单目录（多源 tab 聚合）/ 榜单曲目（`id` + 元信息回填） |
+| `/api/mvs` / `/api/mv` | GET / POST | MV 列表（`tab=latest·exclusive·top·all`）/ MV 详情+播放直链（`r=240..1080`） |
+| `/api/artists` / `/api/artist` | GET | 歌手库（筛选+字母索引分页、歌手榜）/ 歌手主页（`kind=overview·songs·albums·mvs·similar`） |
+| `/api/search_artists` / `/api/search_suggest` / `/api/hot_searches` | GET | 双源歌手搜索（交替合并 12）/ 搜索联想（去重 10）/ 热搜榜（tab 聚合） |
+| `/api/albums` | GET / POST | 新碟架（`kind=new`）/ 已收藏专辑（`kind=fav`）；POST 收藏/取消专辑 |
+| `/api/likes` | GET / POST | 源站红心列表 / 红心切换（乐观更新 + 写后缓存失效） |
+| `/api/comments` | GET / POST | 歌曲评论（`sort=hot·new` 分页）；POST 发表/回复（≤140 字，需对应源登录） |
+| `/api/similar` | GET | 相似歌曲 / 包含此歌的歌单（`kind=songs·playlists`） |
+| `/api/discover` | GET | 首页发现：`banner` / `new_songs`（双源交错）/ `daily_songs`（网易每日推荐，未登录 `need_login`） |
+| `/api/fm` / `/api/fm/trash` | GET / POST | 私人 FM（网易 `mode=ossGB1·popGB1` · QQ 雷达推荐，个性化流不缓存）/ 垃圾桶（网易专属） |
+| `/api/checkin` | GET / POST | 网易签到中心：状态查询（daily/yunbei/vip 三路并发）/ 执行签到 |
+| `/api/recent` | GET | 源账号最近播放（`kind=song·album·playlist`，未登录 `need_login`） |
+| `/api/playlist/manage` | POST | 源站歌单管理：`create` / `delete` / `add_songs` / `remove_songs`（需对应源登录） |
+| `/api/phone_login/[source]` | GET / POST | 手机号登录（网易密码+验证码 · QQ 验证码）：GET 登录档案（30/min IP 限流）；POST `send_code`（3/min）/ `code` / `password`（10/min），凭证经 HttpOnly Set-Cookie 下发浏览器 |
+
+对应前端页面：`/charts` 排行榜、`/artists` 歌手库、`/artist/[id]?source=&tab=` 歌手主页、`/albums` 新碟架、`/mv` MV、`/fm` 私人 FM、`/checkin` 签到中心、`/history` 播放历史——均已接入侧边栏/底部 Tab 导航。
+
 ## 网易云 API 全量迁移（api-enhanced）
 
 底层网易云能力整体切换为 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（MIT）的 **439 个接口全量 TypeScript 移植**，路由规则与其 server.js 1:1（文件名下划线转斜杠，`daily_signin`/`fm_trash`/`personal_fm` 三个特殊路由原样）：

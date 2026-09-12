@@ -21,6 +21,8 @@ export function sourceCookieFingerprint(req: Request): string {
 export interface TtlCache<T> {
   get(key: string): T | undefined;
   set(key: string, value: T): void;
+  /** 删除指定缓存项（写操作成功后主动失效同 key 旧值，保证"读己之写"） */
+  del(key: string): void;
   /** 缓存命中直接返回；miss 时并发去重执行 fetcher，shouldCache 判定是否入缓存 */
   wrap(key: string, fetcher: () => Promise<T>, shouldCache?: (value: T) => boolean): Promise<T>;
 }
@@ -52,6 +54,11 @@ export function createTtlCache<T>(ttlMs: number, maxEntries: number): TtlCache<T
     }
   }
 
+  function del(key: string): void {
+    store.delete(key);
+    inflight.delete(key);
+  }
+
   async function wrap(key: string, fetcher: () => Promise<T>, shouldCache?: (value: T) => boolean): Promise<T> {
     const hit = get(key);
     if (hit !== undefined) return hit;
@@ -68,5 +75,5 @@ export function createTtlCache<T>(ttlMs: number, maxEntries: number): TtlCache<T
     return flight;
   }
 
-  return { get, set, wrap };
+  return { get, set, del, wrap };
 }

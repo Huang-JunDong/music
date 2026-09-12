@@ -5,7 +5,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import {
   X, Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle,
-  Download, Loader2, Music4, Gauge, ChevronDown, ChevronUp,
+  Download, Loader2, Music4, Gauge, ChevronDown, ChevronUp, MessageSquareHeart, AudioLines,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -18,6 +18,8 @@ import { QualityMenu } from "./quality-menu";
 import { SwitchSourceMenu } from "./switch-source-menu";
 import { VolumeMenu } from "./volume-menu";
 import { Spectrum } from "./spectrum";
+import { SongCommentsModal } from "@/components/song-comments";
+import { SimilarModal } from "@/components/similar-modal";
 import type { ClientLyricLine, ClientLyricWord } from "@/lib/lrc-client";
 
 /* ---------- 唱机动画常量（模块级引用稳定） ----------
@@ -396,6 +398,10 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
 
   /* 换源：target 传源名 = 定向换源（switch_source 的 target 参数），undefined = 智能匹配 */
   const [switching, setSwitching] = useState(false);
+  /* 评论弹窗（双源热评/最新，登录后可发表） */
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  /* 相似推荐弹窗（相似歌曲+包含此歌的歌单） */
+  const [similarOpen, setSimilarOpen] = useState(false);
   const doSwitch = async (target?: string) => {
     const tid = toast.loading(target ? `正在从${sourceMeta(target).label}匹配…` : "正在跨源匹配…");
     setSwitching(true);
@@ -651,7 +657,25 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
                 <Download className="h-3.5 w-3.5" />
                 下载
               </button>
+              <button
+                onClick={() => setCommentsOpen(true)}
+                aria-label="查看评论"
+                className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-violet-400/40 hover:text-violet-200 active:scale-95"
+              >
+                <MessageSquareHeart className="h-3.5 w-3.5" />
+                评论
+              </button>
+              <button
+                onClick={() => setSimilarOpen(true)}
+                aria-label="相似推荐"
+                className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-violet-400/40 hover:text-violet-200 active:scale-95"
+              >
+                <AudioLines className="h-3.5 w-3.5" />
+                相似
+              </button>
             </div>
+            <SongCommentsModal song={song} open={commentsOpen} onClose={() => setCommentsOpen(false)} />
+            <SimilarModal song={song} open={similarOpen} onClose={() => setSimilarOpen(false)} />
           </div>
 
         {/* 歌词：移动端歌词视图占满中段（内部滚动无滚动条、文字居中）；桌面右列通栏左对齐。

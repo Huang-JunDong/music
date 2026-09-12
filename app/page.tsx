@@ -10,7 +10,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { Search, Link2, X, Loader2, Sparkles, Music4, ListMusic, Disc3, Filter, ListPlus, ExternalLink, RefreshCw, Clock, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Song, Playlist } from "@/lib/types";
-import { apiSearch, apiImportCollection, type SearchResponse } from "@/lib/client/api";
+import { apiSearch, apiImportCollection, apiSearchSuggest, type SearchResponse } from "@/lib/client/api";
+import { HotSearchSection, ArtistResults } from "@/components/search-enhance";
 import { SongList } from "@/components/song-list";
 import { PlaylistGrid } from "@/components/playlist-grid";
 import { SOURCE_META } from "@/lib/play-url";
@@ -91,6 +92,70 @@ function SearchPageInner() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const resultRef = useRef<HTMLDivElement | null>(null);
 
+  /* ---------- 搜索联想（输入防抖 250ms；非链接态触发） ---------- */
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestIndex, setSuggestIndex] = useState(-1);
+  const suggestSeqRef = useRef(0);
+  useEffect(() => {
+    const q = input.trim();
+    if (!q || /^https?:\/\//i.test(q) || q.length < 1) {
+      setSuggestions([]);
+      setSuggestOpen(false);
+      setSuggestIndex(-1);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const seq = ++suggestSeqRef.current;
+      apiSearchSuggest(q)
+        .then((r) => {
+          if (seq !== suggestSeqRef.current) return;
+          const list = (r.suggestions ?? []).filter((k) => k !== q).slice(0, 8);
+          setSuggestions(list);
+          setSuggestOpen(list.length > 0);
+          setSuggestIndex(-1);
+        })
+        .catch(() => {
+          if (seq !== suggestSeqRef.current) return;
+          setSuggestions([]);
+          setSuggestOpen(false);
+        });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [input]);
+
+  /** 联想键盘导航：↑↓ 移动、Enter 选中、Esc 关闭（技能可访问性要求） */
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!suggestOpen || !suggestions.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSuggestIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSuggestIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Escape") {
+      setSuggestOpen(false);
+      setSuggestIndex(-1);
+    } else if (e.key === "Enter" && suggestIndex >= 0 && suggestions[suggestIndex]) {
+      e.preventDefault();
+      const kw = suggestions[suggestIndex];
+      setInput(kw);
+      setSuggestOpen(false);
+      void doSearch(kw, type, sources);
+    }
+  };
+
+  const pickSuggestion = (kw: string) => {
+    setInput(kw);
+    setSuggestOpen(false);
+    setSuggestIndex(-1);
+    inputRef.current?.blur();
+    void doSearch(kw, type, sources);
+  };
+
+  /** 本次结果对应的关键词（歌手结果区跟随） */
+  const [resultQ, setResultQ] = useState("");
+
   const isLink = useMemo(() => /^https?:\/\//i.test(input.trim()), [input]);
 
   /* 搜索历史（localStorage，最多 10 条，新搜索去重置顶） */
@@ -140,6 +205,7 @@ function SearchPageInner() {
         const resp = await apiSearch({ q: query, type: t, sources: srcs });
         if (seq !== searchSeqRef.current) return; // 过期响应：已有更新的一次搜索在途/完成
         setResult(resp);
+        setResultQ(query);
         pushHistory(query);
         const p = new URLSearchParams({ q: query, type: t, sources: srcs.join(",") });
         window.history.replaceState(null, "", `/?${p.toString()}`);
@@ -179,6 +245,8 @@ function SearchPageInner() {
   /* 提交 */
   const onSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
+    setSuggestOpen(false);
+    setSuggestIndex(-1);
     void doSearch(input, type, sources);
   };
 
@@ -251,8 +319,16 @@ function SearchPageInner() {
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onInputKeyDown}
+            onFocus={() => {
+              if (suggestions.length) setSuggestOpen(true);
+            }}
             placeholder={PLACEHOLDER[type]}
             aria-label="搜索关键词或链接"
+            aria-autocomplete="list"
+            aria-expanded={suggestOpen}
+            aria-controls="search-suggest-list"
+            role="combobox"
             className="min-w-0 flex-1 bg-transparent text-[15px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
             enterKeyHint="search"
           />
@@ -287,6 +363,36 @@ function SearchPageInner() {
             <Link2 className="h-3 w-3" aria-hidden="true" />
             检测到链接，将自动识别来源并解析
           </motion.p>
+        )}
+
+        {/* ---------- 搜索联想下拉 ---------- */}
+        {suggestOpen && suggestions.length > 0 && (
+          <ul
+            id="search-suggest-list"
+            role="listbox"
+            aria-label="搜索联想"
+            className="glass absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-white/[0.1] py-1.5 shadow-2xl shadow-black/50"
+          >
+            {suggestions.map((kw, i) => (
+              <li key={kw} role="option" aria-selected={i === suggestIndex}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    /* mousedown 先于 blur 触发，直接选中 */
+                    e.preventDefault();
+                    pickSuggestion(kw);
+                  }}
+                  onMouseEnter={() => setSuggestIndex(i)}
+                  className={`flex min-h-[42px] w-full items-center gap-2.5 px-4 text-left text-[13.5px] transition-colors ${
+                    i === suggestIndex ? "bg-white/[0.07] text-white" : "text-zinc-300"
+                  }`}
+                >
+                  <Search className="h-3.5 w-3.5 shrink-0 text-zinc-500" aria-hidden="true" />
+                  <span className="truncate">{kw}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </form>
 
@@ -410,6 +516,7 @@ function SearchPageInner() {
             {/* 单曲结果（审核整改 A-28：songs 结构校验，异常响应体防白屏） */}
             {result.type === "song" && Array.isArray(result.songs) && result.songs.length > 0 && !result.error && (
               <>
+                <ArtistResults q={resultQ} />
                 <SectionTitle count={result.songs.length}>单曲结果</SectionTitle>
                 <SongList
                   songs={result.songs}
@@ -422,6 +529,7 @@ function SearchPageInner() {
             )}
             {result.type === "song" && !result.error && (!Array.isArray(result.songs) || result.songs.length === 0) && (
               <>
+                <ArtistResults q={resultQ} />
                 <SectionTitle count={0}>单曲结果</SectionTitle>
                 <SongList
                   songs={[]}
@@ -462,6 +570,13 @@ function SearchPageInner() {
         ) : (
           !searched && (
             <>
+              <HotSearchSection
+                onSearch={(kw) => {
+                  setInput(kw);
+                  inputRef.current?.blur();
+                  void doSearch(kw, type, sources);
+                }}
+              />
               {history.length > 0 && (
                 <div className="mt-8">
                   <div className="mb-2.5 flex items-center justify-between gap-2">

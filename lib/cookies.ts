@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getDB } from "./store";
+import { normalizeSourceCookieString } from "./cookie-normalize";
 
 /* ---------------- 请求级音源凭证会话（多用户：浏览器自带凭证优先） ---------------- */
 
@@ -81,12 +82,16 @@ function loadRows(): CookieRow[] {
 
 export function getAllCookies(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const row of loadRows()) out[row.source] = row.cookie;
+  /* DB 行统一规范化（历史数据可能混入 Set-Cookie 属性段，见 getCookie 注释） */
+  for (const row of loadRows()) out[row.source] = normalizeSourceCookieString(row.cookie.trim());
   const session = sourceSessionALS.getStore();
   if (session) for (const [k, v] of session.values) out[k] = v;
   return out;
 }
 
+/** 读取音源凭证：返回前统一规范化——剥离历史数据/上游 join 混入的 Set-Cookie 属性段
+ *  （Max-Age/Expires/Path 等），覆盖 SQLite 旧值、旧 cookies.json 迁移值与环境变量配置。
+ *  浏览器会话覆盖值（已在下发时规范化）经此为幂等操作。 */
 export function getCookie(source: string): string {
   const key = (source ?? "").trim();
   const session = sourceSessionALS.getStore();
@@ -95,7 +100,7 @@ export function getCookie(source: string): string {
   const row = getDB()
     .prepare("SELECT cookie FROM cookies WHERE source = ?")
     .get(key) as { cookie: string } | undefined;
-  return (row?.cookie ?? "").trim();
+  return normalizeSourceCookieString((row?.cookie ?? "").trim());
 }
 
 export function setAllCookies(map: Record<string, string>): void {

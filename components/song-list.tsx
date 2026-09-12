@@ -16,10 +16,12 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Play, Pause, Download, RefreshCcw, HeartPlus, Loader2, Music4, ListPlus,
   CheckSquare, Square, CheckCheck, FileDown, Gauge, ExternalLink, Disc3,
-  FileText, Image as ImageIcon, Server, Plus, HardDrive, Trash2, ShieldAlert, ChevronDown, Clapperboard,
+  FileText, Image as ImageIcon, Server, Plus, HardDrive, Trash2, ShieldAlert, ChevronDown, Clapperboard, Heart,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Song } from "@/lib/types";
+import { useLikes, LIKE_SOURCES } from "@/lib/client/likes";
+import { SourcePlaylistSheet } from "@/components/source-playlist-sheet";
 import { usePlayer } from "@/lib/client/store";
 import { coverUrl, sourceMeta, qualityTag, downloadUrl, switchSourceUrl, downloadLrcUrl } from "@/lib/play-url";
 import { fmtTimeClient } from "@/lib/client/ui";
@@ -178,10 +180,19 @@ interface SongListProps {
 export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsChange }: SongListProps) {
   const router = useRouter();
   const { queue, index, playing, play, toggle } = usePlayer();
+  /* 红心（源站我喜欢）：列表含网易/QQ 曲目时懒加载对应源集合 */
+  const likeSets = useLikes((s) => s.sets);
+  const toggleLike = useLikes((s) => s.toggle);
+  const loadLikes = useLikes((s) => s.load);
+  useEffect(() => {
+    const sources = new Set(songs.filter((s) => LIKE_SOURCES.has(s.source)).map((s) => s.source));
+    for (const src of sources) void loadLikes(src);
+  }, [songs, loadLikes]);
   const [switching, setSwitching] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [collectTarget, setCollectTarget] = useState<Song | null>(null);
   const [batchCollect, setBatchCollect] = useState<Song[] | null>(null);
+  const [sourceAdd, setSourceAdd] = useState<Song[] | null>(null);
   const [deletingLocal, setDeletingLocal] = useState<Song | null>(null);
   const [busyDeleteLocal, setBusyDeleteLocal] = useState(false);
   /* 行内「更多」受控下拉（点击外部 / Esc / 选择后关闭） */
@@ -622,6 +633,19 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                 <HeartPlus className="h-4 w-4" />
                 收藏 {selected.size > 0 && <span className="text-fuchsia-300">{selected.size}</span>}
               </button>
+              {selectedSongs.some((s) => LIKE_SOURCES.has(s.source)) && (
+                <button
+                  onClick={() =>
+                    selectedSongs.length
+                      ? setSourceAdd(selectedSongs.filter((s) => LIKE_SOURCES.has(s.source)))
+                      : toast.info("请先选择歌曲")
+                  }
+                  className="glass flex min-h-[38px] items-center gap-1.5 rounded-xl border border-white/[0.07] px-3 text-[12.5px] text-zinc-300 hover:text-violet-200"
+                >
+                  <ListPlus className="h-4 w-4" />
+                  入源站歌单 {selected.size > 0 && <span className="text-violet-300">{selected.size}</span>}
+                </button>
+              )}
               <button
                 onClick={() => (selectedSongs.length ? onBatchDownload() : toast.info("请先选择歌曲"))}
                 disabled={batchRunning}
@@ -677,7 +701,9 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
                 onClick={() => onPlay(s)}
                 aria-label={`播放 ${s.name}`}
                 className={`flex h-11 w-11 items-center justify-center rounded-full transition-all active:scale-90 ${
-                  cur ? "text-fuchsia-300" : "text-zinc-500 opacity-0 group-hover:opacity-100 hover:text-white"
+                  cur
+                    ? "text-fuchsia-300"
+                    : "text-zinc-500 hover:text-white [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                 }`}
               >
                 {cur && playing ? <Pause className="h-4 w-4" fill="currentColor" /> : <Play className="h-4 w-4" fill="currentColor" />}
@@ -749,7 +775,22 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
               {/* 时长 */}
               <span className="text-right text-xs tabular-nums text-zinc-500">{fmtTimeClient(s.duration)}</span>
               {/* 操作 */}
-              <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+              <div className="flex items-center justify-end gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-within:opacity-100">
+                {LIKE_SOURCES.has(s.source) && (
+                  <button
+                    onClick={() => void toggleLike(s)}
+                    aria-label={likeSets[s.source]?.has(s.id) ? `取消喜欢 ${s.name}` : `喜欢 ${s.name}`}
+                    aria-pressed={likeSets[s.source]?.has(s.id) ?? false}
+                    title={likeSets[s.source]?.has(s.id) ? "取消红心（源站我喜欢）" : "红心（同步到源站我喜欢）"}
+                    className={`flex h-10 w-10 items-center justify-center rounded-full transition-all active:scale-90 ${
+                      likeSets[s.source]?.has(s.id)
+                        ? "text-rose-400"
+                        : "text-zinc-400 hover:text-rose-300"
+                    }`}
+                  >
+                    <Heart className="h-[17px] w-[17px]" fill={likeSets[s.source]?.has(s.id) ? "currentColor" : "none"} />
+                  </button>
+                )}
                 <button onClick={() => setCollectTarget(s)} aria-label={`收藏 ${s.name}`} title="收藏到歌单" className="flex h-10 w-10 items-center justify-center rounded-full text-zinc-400 transition-all hover:text-fuchsia-300 active:scale-90">
                   <HeartPlus className="h-[17px] w-[17px]" />
                 </button>
@@ -903,6 +944,18 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
               </button>
               {!batchMode && (
                 <div className="flex shrink-0 items-center gap-0.5">
+                  {LIKE_SOURCES.has(s.source) && (
+                    <button
+                      onClick={() => void toggleLike(s)}
+                      aria-label={likeSets[s.source]?.has(s.id) ? `取消喜欢 ${s.name}` : `喜欢 ${s.name}`}
+                      aria-pressed={likeSets[s.source]?.has(s.id) ?? false}
+                      className={`flex h-11 w-9 items-center justify-center active:scale-90 ${
+                        likeSets[s.source]?.has(s.id) ? "text-rose-400" : "text-zinc-500"
+                      }`}
+                    >
+                      <Heart className="h-[18px] w-[18px]" fill={likeSets[s.source]?.has(s.id) ? "currentColor" : "none"} />
+                    </button>
+                  )}
                   <button onClick={() => setCollectTarget(s)} aria-label="收藏" className="flex h-11 w-9 items-center justify-center text-zinc-500 active:scale-90">
                     <HeartPlus className="h-[18px] w-[18px]" />
                   </button>
@@ -945,6 +998,8 @@ export function SongList({ songs, loading, emptyHint, showIndex = true, onSongsC
 
       <CollectSheet song={collectTarget} onClose={() => setCollectTarget(null)} />
       <CollectSheet songs={batchCollect} onClose={() => setBatchCollect(null)} />
+      {/* 条件挂载：SourcePlaylistSheet 的 Modal open 恒真，无条件渲染会导致弹窗常驻且无法关闭 */}
+      {sourceAdd !== null && <SourcePlaylistSheet songs={sourceAdd} onClose={() => setSourceAdd(null)} />}
 
       {/* 批量下载预检确认：部分已下载过将被跳过 */}
       <ConfirmDialog

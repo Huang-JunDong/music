@@ -16,6 +16,8 @@ import {
 
 export const RECOMMEND_SOURCE_NAMES = ["netease", "qq", "kugou", "kuwo"];
 export const USER_PLAYLIST_SOURCE_NAMES = ["netease", "qq", "kugou", "soda"];
+/** 排行榜（当前仅网易/QQ实现了 ToplistProvider） */
+export const TOPLIST_SOURCE_NAMES = ["netease", "qq"];
 
 /**
  * LIKE 元字符转义（审核整改 A-25）：配合 SQL 中 ESCAPE '\' 使用，

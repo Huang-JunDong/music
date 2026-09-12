@@ -203,6 +203,22 @@ describe("会话内 getCookie / getAllCookies", () => {
     expect(runWithSourceSession(store, () => getCookie("qq"))).toBe("db-qq");
   });
 
+  it("DB 历史数据混入 Set-Cookie 属性段时读取即净化（MUSIC_U 保留、属性剥离）", () => {
+    dbMock.state.rows.set(
+      "netease",
+      "MUSIC_U=abc; Max-Age=31536000; Expires=Sun, 12 Sep 2027 00:00:00 GMT; Path=/; Domain=.music.163.com; __csrf=x",
+    );
+    expect(getCookie("netease")).toBe("MUSIC_U=abc; __csrf=x");
+  });
+
+  it("getAllCookies 的 DB 行同样净化", () => {
+    dbMock.state.rows.set("qq", "uin=1; Path=/; Max-Age=1");
+    const store = createSourceSessionStore({ netease: "browser" }, false);
+    const all = runWithSourceSession(store, () => getAllCookies());
+    expect(all.qq).toBe("uin=1");
+    expect(all.netease).toBe("browser");
+  });
+
   it("getAllCookies：DB 行与会话覆盖值合并（会话优先）", () => {
     dbMock.state.rows.set("netease", "global");
     dbMock.state.rows.set("qq", "db-qq");

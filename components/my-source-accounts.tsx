@@ -8,10 +8,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { QrCode, LogOut, Loader2 } from "lucide-react";
+import { QrCode, LogOut, Loader2, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
 import { QrImage } from "@/components/qr-image";
+import { PhoneLoginModal } from "@/components/phone-login-modal";
 import {
   apiCreateQRLogin,
   apiCheckQRLogin,
@@ -23,6 +24,8 @@ import type { QRLoginSession } from "@/lib/types";
 
 /** 可扫码登录"自己账号"的源（与设置页 LOGIN_SOURCES 对齐；qq_wx=微信通道） */
 const MINE_LOGIN_SOURCES = ["netease", "qq", "qq_wx", "kugou", "bilibili"];
+/** 支持手机号登录的源（验证码双源 / 密码仅网易） */
+const PHONE_LOGIN_SOURCES = new Set(["netease", "qq"]);
 
 type MineQRState = { source: string; session: QRLoginSession; status: "waiting" | "scanned" | "expired" };
 
@@ -30,6 +33,7 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
   const [statuses, setStatuses] = useState<Record<string, boolean> | null>(null);
   const [qr, setQr] = useState<MineQRState | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
+  const [phoneSource, setPhoneSource] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState<string | null>(null);
   const notifiedScanRef = useRef(false);
 
@@ -167,19 +171,42 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
                   {loggingOut === s ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <LogOut className="h-3.5 w-3.5" aria-hidden="true" />} 退出
                 </button>
               ) : (
-                <button
-                  onClick={() => void openQR(s)}
-                  disabled={qrLoading}
-                  className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-white/[.1] bg-white/[.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-violet-400/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95 disabled:opacity-50"
-                >
-                  {qrLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <QrCode className="h-3.5 w-3.5" aria-hidden="true" />}
-                  扫码登录
-                </button>
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                  {PHONE_LOGIN_SOURCES.has(s) && (
+                    <button
+                      onClick={() => setPhoneSource(s)}
+                      aria-label={`手机号登录${sourceMeta(s).label}`}
+                      className="flex h-11 items-center gap-1.5 rounded-xl border border-white/[.1] bg-white/[.04] px-3 text-[12px] font-medium text-zinc-300 transition-colors hover:border-violet-400/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95"
+                    >
+                      <Smartphone className="h-3.5 w-3.5" aria-hidden="true" />
+                      手机登录
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void openQR(s)}
+                    disabled={qrLoading}
+                    className="flex h-11 items-center gap-1.5 rounded-xl border border-white/[.1] bg-white/[.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-violet-400/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95 disabled:opacity-50"
+                  >
+                    {qrLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <QrCode className="h-3.5 w-3.5" aria-hidden="true" />}
+                    扫码登录
+                  </button>
+                </span>
               )}
             </div>
           );
         })}
       </div>
+
+      {phoneSource && (
+        <PhoneLoginModal
+          source={phoneSource}
+          onClose={() => setPhoneSource(null)}
+          onSuccess={() => {
+            loadStatuses();
+            onChanged?.();
+          }}
+        />
+      )}
 
       <Modal open={!!qr} onClose={() => setQr(null)} title={`扫码登录${qr ? sourceMeta(qr.source).label : ""}`}>
         {qr && (

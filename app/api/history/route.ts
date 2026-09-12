@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { checkWriteGuard } from "@/lib/write-guard";
+import { getProvider } from "@/lib/registry";
 import {
   clearPlayHistory,
   isValidHistorySid,
@@ -65,6 +66,19 @@ export async function POST(req: NextRequest) {
   const existing = readSid(req);
   const sessionKey = existing ?? randomUUID();
   recordPlayHistory(sessionKey, body);
+
+  /* scrobble 听歌埋点（网易源账号）：同步源站听歌历史喂每日推荐，fire-and-forget 静默失败 */
+  if (body.source === "netease" && body.id) {
+    const provider = getProvider("netease");
+    if (provider?.scrobbleSong) {
+      void provider
+        .scrobbleSong({ id: body.id, source: body.source, duration: body.duration ?? 0 })
+        .catch(() => {
+          /* 未登录/网络失败不打断本机历史记录 */
+        });
+    }
+  }
+
   const res = NextResponse.json({ status: "ok" });
   if (!existing) {
     /* R2 复审加固：HTTPS 部署下附 secure 标志（防中间人读取会话键）；

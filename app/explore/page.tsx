@@ -12,6 +12,8 @@ import { Sparkles, LayoutGrid, Heart, Flame, Compass, Settings, AlertTriangle, R
 import { toast } from "sonner";
 import { PlaylistGrid } from "@/components/playlist-grid";
 import { PageHeader } from "@/components/page-header";
+import { DiscoverExtras } from "@/components/discover-extras";
+import { SourcePlaylistSheet } from "@/components/source-playlist-sheet";
 import {
   apiRecommend,
   apiPlaylistCategories,
@@ -209,6 +211,8 @@ function RecommendTab() {
           <span>{aggError}</span>
         </div>
       )}
+      {/* 首页发现增强：banner 轮播 + 双源新歌速递 + 每日推荐（登录） */}
+      <DiscoverExtras />
       {ok.map((g, i) => (
         <motion.section
           key={g.source}
@@ -411,17 +415,26 @@ function CategoryTab() {
 
 /* ================= 我的收藏（登录源） ================= */
 
-/** 我的音源账号快捷入口（完整管理在侧边栏菜单「我的音源账号」页） */
-function AccountsEntry() {
+/** 我的音源账号快捷入口（完整管理在侧边栏菜单「我的音源账号」页）+ 新建源站歌单 */
+function AccountsEntry({ onCreate }: { onCreate: () => void }) {
   return (
-    <Link
-      href="/accounts"
-      className="glass mb-5 flex min-h-[52px] items-center gap-2.5 rounded-2xl border border-white/[.07] px-4 text-[13px] font-medium text-zinc-300 transition-colors hover:border-violet-400/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
-    >
-      <QrCode className="h-4 w-4 shrink-0 text-fuchsia-300" aria-hidden="true" />
-      <span>登录自己的网易云 / QQ 账号，同步个人收藏歌单与会员内容</span>
-      <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
-    </Link>
+    <div className="mb-5 flex flex-col gap-2 sm:flex-row">
+      <Link
+        href="/accounts"
+        className="glass flex min-h-[52px] flex-1 items-center gap-2.5 rounded-2xl border border-white/[.07] px-4 text-[13px] font-medium text-zinc-300 transition-colors hover:border-violet-400/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+      >
+        <QrCode className="h-4 w-4 shrink-0 text-fuchsia-300" aria-hidden="true" />
+        <span>登录自己的网易云 / QQ 账号，同步个人收藏歌单与会员内容</span>
+        <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+      </Link>
+      <button
+        onClick={onCreate}
+        className="glass flex min-h-[52px] items-center gap-2 rounded-2xl border border-white/[.07] px-4 text-[13px] font-medium text-zinc-300 transition-colors hover:border-violet-400/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+      >
+        <Sparkles className="h-4 w-4 shrink-0 text-violet-300" aria-hidden="true" />
+        新建源站歌单
+      </button>
+    </div>
   );
 }
 
@@ -435,6 +448,7 @@ function MineTab() {
   const [aggError, setAggError] = useState(initial?.error ?? "");
   const [error, setError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -458,7 +472,7 @@ function MineTab() {
   if (error) {
     return (
       <>
-        <AccountsEntry />
+        <AccountsEntry onCreate={() => setCreateOpen(true)} />
         <LoginHint text={error} />
       </>
     );
@@ -466,7 +480,7 @@ function MineTab() {
   if (!groups)
     return (
       <>
-        <AccountsEntry />
+        <AccountsEntry onCreate={() => setCreateOpen(true)} />
         <SectionsSkeleton />
       </>
     );
@@ -477,7 +491,7 @@ function MineTab() {
   if (!ok.length) {
     return (
       <>
-        <AccountsEntry />
+        <AccountsEntry onCreate={() => setCreateOpen(true)} />
         <LoginHint
           text={errs.length ? "部分源获取收藏歌单失败" : "该账号还没有收藏歌单"}
           hint={errs.length ? undefined : "在「我的音源账号」页登录自己的账号后，个人收藏歌单会同步到这里"}
@@ -488,7 +502,7 @@ function MineTab() {
 
   return (
     <>
-      <AccountsEntry />
+      <AccountsEntry onCreate={() => setCreateOpen(true)} />
       {aggError && (
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-4 py-3 text-[13px] leading-relaxed text-amber-200/80">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -518,6 +532,16 @@ function MineTab() {
           <PlaylistGrid playlists={g.playlists} emptyHint="该源没有收藏歌单" />
         </motion.section>
       ))}
+      {createOpen && (
+        <SourcePlaylistSheet
+          songs={null}
+          onClose={() => {
+            setCreateOpen(false);
+            /* 创建成功后清缓存，下次进入 mine tab 重新拉取 */
+            mineCacheMap.delete(cacheKey);
+          }}
+        />
+      )}
     </>
   );
 }

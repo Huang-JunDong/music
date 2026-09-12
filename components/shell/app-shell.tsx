@@ -8,7 +8,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion, MotionConfig } from "motion/react";
 import {
-  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode,
+  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode, Trophy, MonitorPlay, Radio, Disc3, CalendarCheck, Rewind, Users,
   type LucideIcon,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
@@ -32,9 +32,16 @@ const NAV: NavItem[] = [
      /album 主入口是首页专辑结果与歌曲行专辑链接 → 归「搜索」 */
   { href: "/", label: "搜索", icon: Search, match: (p: string) => p === "/" || p.startsWith("/album") },
   { href: "/explore", label: "歌单广场", icon: Compass, match: (p: string) => p.startsWith("/explore") || p.startsWith("/playlist") },
+  { href: "/albums", label: "新碟架", icon: Disc3, match: (p: string) => p.startsWith("/albums") },
+  { href: "/charts", label: "排行榜", icon: Trophy, match: (p: string) => p.startsWith("/charts") },
+  { href: "/artists", label: "歌手库", icon: Users, match: (p: string) => p.startsWith("/artists") },
+  { href: "/mv", label: "MV", icon: MonitorPlay, match: (p: string) => p.startsWith("/mv") },
+  { href: "/fm", label: "私人FM", icon: Radio, match: (p: string) => p.startsWith("/fm") },
   { href: "/collections", label: "我的歌单", icon: ListMusic, match: (p: string) => p.startsWith("/collections") || p.startsWith("/collection") },
   { href: "/local", label: "本地音乐", icon: HardDrive, match: (p: string) => p.startsWith("/local") },
   { href: "/downloads", label: "下载记录", icon: History, match: (p: string) => p.startsWith("/downloads") },
+  { href: "/checkin", label: "签到中心", icon: CalendarCheck, match: (p: string) => p.startsWith("/checkin") },
+  { href: "/history", label: "播放历史", icon: Rewind, match: (p: string) => p.startsWith("/history") },
   { href: "/render", label: "视频渲染", icon: Clapperboard, match: (p: string) => p.startsWith("/render") },
   { href: "/accounts", label: "我的音源账号", icon: QrCode, match: (p: string) => p.startsWith("/accounts"), group: "音源与 API" },
   { href: "/netease", label: "网易 API", icon: Terminal, match: (p: string) => p.startsWith("/netease"), group: "音源与 API" },

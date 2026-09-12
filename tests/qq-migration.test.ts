@@ -38,6 +38,20 @@ vi.mock("../lib/qq/credential", async (importOriginal) => {
   return { ...mod, loadCredential: () => null };
 });
 
+/* 隔离 QIMEI 设备标识申请：invoke 每次 buildComm 都会 await ensureQimei，
+ * 设备文件缓存过期时真实出网导致用例在离线/CI 环境必失败（审核整改 P2-2）——固定值 mock */
+vi.mock("../lib/qq/qimei", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../lib/qq/qimei")>();
+  return { ...mod, ensureQimei: async () => ({ q16: "test-q16", q36: "test-q36" }) };
+});
+
+/* 隔离 Android session 刷新：设备文件 session 过期时会真实请求 GetSession 并回写设备文件，
+ * fetch mock 无该响应载荷必然失败——恒真跳过刷新（无网络、不污染 data/ 设备文件） */
+vi.mock("../lib/qq/device", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../lib/qq/device")>();
+  return { ...mod, isSessionValid: () => true };
+});
+
 describe("封面 URL 体系", () => {
   it("六档尺寸 + T001/T002", () => {
     expect(albumCoverUrl({ mid: "abc" }, 150)).toBe(

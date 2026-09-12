@@ -5,6 +5,9 @@
  */
 import type { NextRequest } from "next/server";
 import { createSourceSessionStore, runWithSourceSession } from "./cookies";
+import { normalizeSourceCookieString } from "./cookie-normalize";
+
+export { normalizeSourceCookieString };
 
 export const SRC_SESSION_COOKIE_PREFIX = "music_dl_src_";
 
@@ -56,9 +59,16 @@ export function requestIsHttps(req: NextRequest | Request): boolean {
   }
 }
 
-/** 音源凭证下发到浏览器的 Set-Cookie 头（HttpOnly；值 encodeURIComponent 编码；https 部署附 Secure） */
+/**
+ * 浏览器单 cookie name+value 超 4096 会被静默丢弃——凭证值统一经 normalizeSourceCookieString
+ * 规范化（lib/cookie-normalize.ts，剥离 Set-Cookie 属性段 + 超限裁剪）后下发。
+ */
+
+/** 音源凭证下发到浏览器的 Set-Cookie 头（HttpOnly；值 encodeURIComponent 编码；https 部署附 Secure）。
+ *  值经 normalizeSourceCookieString 兜底规范化——杜绝编码后超 4096 被浏览器丢弃。 */
 export function srcSessionSetCookie(source: string, value: string, secure = false): string {
-  return `${srcSessionCookieName(source)}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SRC_SESSION_MAX_AGE}${secure ? "; Secure" : ""}`;
+  const normalized = normalizeSourceCookieString(value);
+  return `${srcSessionCookieName(source)}=${encodeURIComponent(normalized)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SRC_SESSION_MAX_AGE}${secure ? "; Secure" : ""}`;
 }
 
 /** 清除浏览器音源凭证（退出"我的账号"） */
