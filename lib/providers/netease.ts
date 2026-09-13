@@ -2728,7 +2728,7 @@ export const netease: MusicProvider = {
        保留 id/name/children 读取作兼容兜底 */
     const resp = await invokeNcm<{
       code?: number;
-      data?: { id?: number; name?: string; hot?: boolean; children?: { id?: number; name?: string; hot?: boolean }[]; tagId?: number; tagName?: string; childrenTags?: { tagId?: number; tagName?: string; hot?: boolean }[] }[];
+      data?: { id?: number; name?: string; hot?: boolean; children?: { id?: number; name?: string; hot?: boolean; tagId?: number; tagName?: string }[]; tagId?: number; tagName?: string; childrenTags?: { id?: number; name?: string; hot?: boolean; tagId?: number; tagName?: string }[] }[];
     }>("style_list");
     if (resp.body.code !== 200) throw new Error(`netease style list api error code: ${resp.body.code}`);
     const tags: StyleTag[] = [];
@@ -2775,7 +2775,7 @@ export const netease: MusicProvider = {
   async getStyleAlbums(styleId: string, page: number, limit: number): Promise<{ albums: Playlist[]; has_more: boolean }> {
     /* 审核整改 C-07：同 getStyleSongs；修复：上游 albums 嵌套在 data 下 */
     const l = Math.min(Math.max(limit, 1), 100);
-    const resp = await invokeNcm<{ code?: number; albums?: NeteasePlaylistItem[]; data?: { albums?: NeteasePlaylistItem[]; hasMore?: boolean } }>("style_album", {
+    const resp = await invokeNcm<{ code?: number; hasMore?: boolean; albums?: NeteasePlaylistItem[]; data?: { albums?: NeteasePlaylistItem[]; hasMore?: boolean } }>("style_album", {
       tagId: Number(styleId),
       cursor: (Math.max(page, 1) - 1) * l,
       size: l,
@@ -2812,7 +2812,7 @@ export const netease: MusicProvider = {
   async getStylePlaylists(styleId: string, page: number, limit: number): Promise<{ playlists: Playlist[]; has_more: boolean }> {
     /* 审核整改 C-07：同 getStyleSongs；修复：上游 playlist 嵌套在 data 下 */
     const l = Math.min(Math.max(limit, 1), 100);
-    const resp = await invokeNcm<{ code?: number; playlists?: NeteasePlaylistItem[]; data?: { playlist?: NeteasePlaylistItem[]; hasMore?: boolean } }>("style_playlist", {
+    const resp = await invokeNcm<{ code?: number; hasMore?: boolean; playlists?: NeteasePlaylistItem[]; data?: { playlist?: NeteasePlaylistItem[]; hasMore?: boolean } }>("style_playlist", {
       tagId: Number(styleId),
       cursor: (Math.max(page, 1) - 1) * l,
       size: l,
