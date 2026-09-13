@@ -96,6 +96,29 @@
 | `/api/playlist/manage` | POST | 源站歌单管理：`create` / `delete` / `add_songs` / `remove_songs`（需对应源登录） |
 | `/api/phone_login/[source]` | GET / POST | 手机号登录（网易密码+验证码 · QQ 验证码）：GET 登录档案（30/min IP 限流）；POST `send_code`（3/min）/ `code` / `password`（10/min），凭证经 HttpOnly Set-Cookie 下发浏览器 |
 
+### 音源能力扩展路由 P1 批次（Go 无对应 · 2026-09-13 审核批次）
+
+> 同上节约束：浏览器级源凭证会话隔离、缓存 key 附凭证指纹、写操作需 XHR + 同源、聚合 allSettled 降级；个人数据（云盘/报告/关注列表）一律不缓存。出站请求默认 15s 超时（`lib/netease/option.ts` `resolveNcmTimeout`，用户 `timeout` 参数钳制 1-30000ms）。
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/api/account` | POST | 账号管理增强：`refresh` 凭证续期（网易 login_refresh · QQ refreshCredential）/ `anonymous` 网易匿名注册（写入浏览器会话，6/min IP）/ `check_expired` QQ 凭证过期探测 |
+| `/api/cloud` | GET / POST | 云盘音乐（网易专属）：列表分页+空间用量（个人数据不缓存）/ `?id=` 单条详情；POST `match` 匹配纠错 · `delete` 删除（6/min IP）· `lyric` 云盘歌词 |
+| `/api/countries` | GET | 国际区号列表（手机登录区号选择，24h 缓存；无能力时内置兜底表） |
+| `/api/followed_artists` | GET | 已关注歌手（网易 artist_sublist · QQ GetFollowSingerList；个人数据不缓存） |
+| `/api/highquality` | GET | 精品歌单专区（`tag/page/limit` + `with_tags=1` 附标签；链式 lasttime 游标翻页） |
+| `/api/podcast` | GET | 播客电台（网易 dj_catelist / dj_recommend·hot·today·分类，`kind/category/page`） |
+| `/api/podcast_detail` | GET | 电台详情 + 节目分页（`id/program_page`）；`?program_id=` 单节目完整详情 |
+| `/api/report` | GET | 听歌报告（`section=annual·stats·record·history`，按段独立加载；个人数据不缓存） |
+| `/api/song_wiki` | GET | 歌曲百科聚合（图文/创作人员/元信息/精彩评论数/版权替代；QQ 标签·制作人·其他版本） |
+| `/api/styles` / `/api/styles/detail` | GET | 曲风探索：两级曲风树+偏好 / 曲风详情与四类资源（`kind=meta·song·album·artist·playlist`） |
+| `/api/user_follows` | GET | 关注/粉丝/互关列表（`uid/kind=follows·followeds·mutual`，120s 缓存键含指纹） |
+| `/api/user_profile` | GET | 用户资料（`uid` 省略=当前登录用户；QQ 复用登录档案） |
+| `/api/video` | GET | 视频详情+多分辨率直链（`r=240..1080`）；`?related=1` 相关视频 |
+| `/api/vip_info` | GET | VIP 信息（网易 vip_info_v2+乐签 · QQ vip_login_base；60s 缓存键含指纹） |
+
+对应前端页面：本批次新增 `/podcast` 播客电台、`/styles` + `/styles/[id]` 曲风探索、`/profile` + `/user/[id]` 用户主页、`/report` 听歌报告、`/cloud` 云盘音乐——均已接入侧边栏/底部 Tab 导航。
+
 对应前端页面：`/charts` 排行榜、`/artists` 歌手库、`/artist/[id]?source=&tab=` 歌手主页、`/albums` 新碟架、`/mv` MV、`/fm` 私人 FM、`/checkin` 签到中心、`/history` 播放历史——均已接入侧边栏/底部 Tab 导航。
 
 ## 网易云 API 全量迁移（api-enhanced）

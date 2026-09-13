@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withBrowserSourceSession } from "@/lib/source-session";
 import { getProvider, songFromParams } from "@/lib/registry";
 import { checkWriteGuard } from "@/lib/write-guard";
+import { rateLimit, requestIP } from "@/lib/rate-limit";
 import { UpstreamError } from "@/lib/types";
 import type { Song } from "@/lib/types";
 
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
  * { action: "delete", source, playlist_id } → { ok }
  * { action: "add_songs" | "remove_songs", source, playlist_id, songs: [song参数集] } → { ok }
  * { action: "update", source, playlist_id, name, desc? } → { ok }（仅网易支持编辑）
+ * { action: "subscribe" | "unsubscribe", source, playlist_id } → { ok }（P1 B4：收藏歌单，网易 playlist_subscribe · QQ favSonglist）
  */
 export const POST = (req: NextRequest) => withBrowserSourceSession(req, postHandler);
 
@@ -24,11 +26,16 @@ interface ManageBody {
   desc?: string;
   playlist_id?: string;
   songs?: Record<string, string>[];
+  playlist_ids?: string[];
 }
 
 async function postHandler(req: NextRequest) {
   const guard = checkWriteGuard(req);
   if (guard) return guard;
+  /* 审核整改 R2-#1：写操作频控 */
+  if (!rateLimit(`playlist-manage:${requestIP(req)}`, 8, 60_000)) {
+    return NextResponse.json({ error: "操作过于频繁，请稍后再试" }, { status: 429 });
+  }
 
   let body: ManageBody = {};
   try {
@@ -77,7 +84,8 @@ async function postHandler(req: NextRequest) {
       const songs: Song[] = body.songs.map((raw) => songFromParams(new URLSearchParams(raw)));
       const valid = songs.filter((s) => s.id && s.source === source);
       if (!valid.length) {
-        return NextResponse.json({ error: `仅支持${source === "netease" ? "网易云" : "QQ音乐"}源歌曲` }, { status: 400 });
+        /* 审核整改 R2-#13：原文案在第三方源时误导（提示"仅支持QQ音乐源歌曲"） */
+        return NextResponse.json({ error: `歌曲与歌单源不一致（本次操作源：${source}）` }, { status: 400 });
       }
       if (action === "add_songs") {
         if (!provider?.addSongsToPlaylist) throw new UpstreamError("该源不支持添加歌曲");
@@ -87,6 +95,23 @@ async function postHandler(req: NextRequest) {
         await provider.removeSongsFromPlaylist!(playlistId, valid);
       }
       return NextResponse.json({ ok: true, count: valid.length });
+    }
+    if (action === "subscribe" || action === "unsubscribe") {
+      const playlistId = (body.playlist_id ?? "").trim();
+      if (!playlistId) return NextResponse.json({ error: "Missing playlist_id" }, { status: 400 });
+      if (!provider?.subscribePlaylist) throw new UpstreamError("该源不支持收藏歌单");
+      await provider.subscribePlaylist!(playlistId, action === "subscribe");
+      return NextResponse.json({ ok: true });
+    }
+    /* P1 C4：歌单排序（playlist_order_update：ids 全量顺序，置顶=移至首位） */
+    if (action === "order") {
+      const playlistIds = Array.isArray((body as { playlist_ids?: string[] }).playlist_ids)
+        ? (body as { playlist_ids: string[] }).playlist_ids.filter((x) => typeof x === "string" && x.trim())
+        : [];
+      if (playlistIds.length < 2) return NextResponse.json({ error: "至少需要两个歌单 id" }, { status: 400 });
+      if (!provider?.updatePlaylistOrder) throw new UpstreamError("该源不支持歌单排序");
+      await provider.updatePlaylistOrder!(playlistIds);
+      return NextResponse.json({ ok: true });
     }
     return NextResponse.json({ error: "无效的 action" }, { status: 400 });
   } catch (err) {

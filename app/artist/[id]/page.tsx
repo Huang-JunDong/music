@@ -9,22 +9,24 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  UserRound, Music4, Disc3, MonitorPlay, Users2, RefreshCw, AlertTriangle, ChevronDown, ExternalLink, Sparkles, ChevronRight,
+  UserRound, Music4, Disc3, MonitorPlay, Users2, RefreshCw, AlertTriangle, ChevronDown, ExternalLink, Sparkles, ChevronRight, Heart, Clapperboard,
 } from "lucide-react";
+import { toast } from "sonner";
 import { SongList } from "@/components/song-list";
 import { PlaylistGrid } from "@/components/playlist-grid";
 import { MvPlayModal, formatPlayCount } from "@/components/mv-play-modal";
-import { apiArtistOverview, apiArtistPage } from "@/lib/client/api";
+import { apiArtistOverview, apiArtistPage, apiArtistWiki, apiFollowArtist, apiArtistVideos } from "@/lib/client/api";
 import { coverProxyUrl, sourceMeta } from "@/lib/play-url";
 import { formatDuration, type Artist, type MvItem, type Playlist, type Song } from "@/lib/types";
 
-type TabKey = "hot" | "songs" | "albums" | "mvs" | "similar";
+type TabKey = "hot" | "songs" | "albums" | "mvs" | "videos" | "similar";
 
-const TABS: { key: TabKey; label: string; icon: typeof Music4 }[] = [
+const TABS: { key: TabKey; label: string; icon: typeof Music4; neteaseOnly?: boolean }[] = [
   { key: "hot", label: "热门50", icon: Sparkles },
   { key: "songs", label: "全部歌曲", icon: Music4 },
   { key: "albums", label: "专辑", icon: Disc3 },
   { key: "mvs", label: "MV", icon: MonitorPlay },
+  { key: "videos", label: "视频", icon: Clapperboard, neteaseOnly: true },
   { key: "similar", label: "相似歌手", icon: Users2 },
 ];
 
@@ -122,7 +124,7 @@ function ArtistInner() {
       {/* ---------- tab 条（sticky） ---------- */}
       <div className="sticky top-[61px] z-20 -mx-4 bg-gradient-to-b from-surface-sticky via-surface-sticky/92 to-transparent px-4 pb-2 pt-2 backdrop-blur-sm lg:top-0 lg:-mx-8 lg:px-8">
         <div className="glass inline-flex max-w-full flex-nowrap overflow-x-auto rounded-xl border border-white/[0.07] p-1 no-scrollbar" role="tablist" aria-label="歌手内容">
-          {TABS.map((t) => {
+          {TABS.filter((t) => !t.neteaseOnly || source === "netease").map((t) => {
             const Icon = t.icon;
             const active = tab === t.key;
             return (
@@ -163,6 +165,7 @@ function ArtistInner() {
             {tab === "songs" && <SongsTab source={source} id={id} />}
             {tab === "albums" && <AlbumsTab source={source} id={id} />}
             {tab === "mvs" && <MvsTab source={source} id={id} />}
+            {tab === "videos" && source === "netease" && <VideosTab id={id} />}
             {tab === "similar" && <SimilarTab source={source} id={id} />}
           </motion.div>
         </AnimatePresence>
@@ -173,8 +176,65 @@ function ArtistInner() {
 
 /* ================= 头部资料卡 ================= */
 
+/** P1 C2：关注歌手按钮（artist_sub，本地乐观更新，失败回滚） */
+function FollowArtistButton({ artistId }: { artistId: string }) {
+  const [followed, setFollowed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const toggle = async () => {
+    if (busy) return;
+    const next = !followed;
+    setFollowed(next); /* 乐观更新 */
+    setBusy(true);
+    try {
+      await apiFollowArtist("netease", artistId, next);
+      toast.success(next ? "已关注该歌手" : "已取消关注");
+    } catch (e) {
+      setFollowed(!next); /* 回滚 */
+      toast.error(e instanceof Error ? e.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      aria-pressed={followed}
+      className={`flex min-h-[36px] items-center gap-1 rounded-full px-3.5 text-[12px] font-semibold transition-all active:scale-95 disabled:opacity-60 ${
+        followed
+          ? "border border-fuchsia-400/40 bg-fuchsia-500/15 text-fuchsia-200"
+          : "bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-fuchsia-500/20"
+      }`}
+    >
+      <Heart className={`h-3 w-3 ${followed ? "fill-fuchsia-300 text-fuchsia-300" : ""}`} aria-hidden="true" />
+      {followed ? "已关注" : "+ 关注"}
+    </button>
+  );
+}
+
 function ArtistHeader({ artist, source }: { artist: Artist | null; source: string }) {
   const [briefOpen, setBriefOpen] = useState(false);
+  const [followerCount, setFollowerCount] = useState<number | null>(null);
+  const [longDesc, setLongDesc] = useState("");
+
+  /* P1 C2：粉丝数 + 长文简介（artist_detail/dynamic + QQ GetSingerDetail，失败静默隐藏） */
+  useEffect(() => {
+    if (!artist?.id) return;
+    let alive = true;
+    apiArtistWiki(source, artist.id)
+      .then((r) => {
+        if (!alive || r.error) return;
+        if (typeof r.follower_count === "number" && r.follower_count > 0) setFollowerCount(r.follower_count);
+        if (r.desc && r.desc.length > 60) setLongDesc(r.desc);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [artist?.id, source]);
+
   if (!artist) {
     return (
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center" aria-busy="true">
@@ -228,6 +288,8 @@ function ArtistHeader({ artist, source }: { artist: Artist | null; source: strin
               <ExternalLink className="h-3 w-3" aria-hidden="true" /> 源站
             </a>
           )}
+          {/* P1 C2：关注歌手（artist_sub · QQ 侧歌手关注体系由源站 App 承担，此处仅网易渲染） */}
+          {source === "netease" && <FollowArtistButton artistId={artist.id} />}
         </div>
         {artist.alias && <p className="mt-1 text-[13px] text-zinc-500">{artist.alias}</p>}
         <div className="mt-2 flex flex-wrap gap-3">
@@ -238,6 +300,11 @@ function ArtistHeader({ artist, source }: { artist: Artist | null; source: strin
                 <span className="font-bold tabular-nums text-zinc-200">{v}</span> {label}
               </span>
             ))}
+          {followerCount !== null && (
+            <span className="text-[12px] text-zinc-500">
+              <span className="font-bold tabular-nums text-zinc-200">{formatPlayCount(followerCount)}</span> 粉丝
+            </span>
+          )}
         </div>
         {artist.brief && (
           <div className="mt-2.5">
@@ -256,6 +323,12 @@ function ArtistHeader({ artist, source }: { artist: Artist | null; source: strin
                 <ChevronDown className={`h-3.5 w-3.5 transition-transform ${briefOpen ? "rotate-180" : ""}`} aria-hidden="true" />
               </button>
             )}
+          </div>
+        )}
+        {/* P1 C2：歌手长文简介（artist_detail / QQ GetSingerDetail wiki），与 brief 互补 */}
+        {longDesc && (
+          <div className="mt-2.5">
+            <p className={`max-w-3xl text-[13px] leading-relaxed text-zinc-500 ${briefOpen ? "" : "line-clamp-2"}`}>{longDesc}</p>
           </div>
         )}
       </div>
@@ -470,6 +543,93 @@ function MvsTab({ source, id }: { source: string; id: string }) {
         <LoadMoreButton loading={pager.loadingMore} onClick={pager.loadMore} />
       )}
       <MvPlayModal mv={playing} onClose={() => setPlaying(null)} />
+    </>
+  );
+}
+
+/* ================= P1 C2：歌手视频（artist_video，网易专属；R_VI 体系经 MvPlayModal 分发播放） ================= */
+
+function VideosTab({ id }: { id: string }) {
+  const [videos, setVideos] = useState<MvItem[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [playing, setPlaying] = useState<MvItem | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError("");
+    apiArtistVideos("netease", id, 1, 20)
+      .then((r) => {
+        if (!alive) return;
+        if (r.error) throw new Error(r.error);
+        setVideos(r.videos ?? []);
+        setHasMore(!!r.has_more);
+        setPage(1);
+      })
+      .catch((e) => alive && setError(e instanceof Error ? e.message : "加载失败"))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [id, retryKey]);
+
+  const loadMore = () => {
+    const next = page + 1;
+    setLoading(true);
+    apiArtistVideos("netease", id, next, 20)
+      .then((r) => {
+        if (r.error) throw new Error(r.error);
+        setVideos((prev) => [...prev, ...(r.videos ?? [])]);
+        setHasMore(!!r.has_more);
+        setPage(next);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "加载更多失败"))
+      .finally(() => setLoading(false));
+  };
+
+  if (error && !videos.length) return <PagerError text={error} onRetry={() => setRetryKey((k) => k + 1)} />;
+
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {loading && !videos.length
+          ? Array.from({ length: 4 }).map((_, i) => (
+              <div key={i}>
+                <div className="shimmer aspect-video rounded-2xl" />
+                <div className="shimmer mt-2 h-3.5 w-3/4 rounded" />
+              </div>
+            ))
+          : videos.map((v, i) => (
+              <motion.button
+                key={`${v.id}-${i}`}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: Math.min(i * 0.04, 0.4), duration: 0.3 }}
+                onClick={() => setPlaying(v)}
+                aria-label={`播放视频 ${v.name}`}
+                className="card-glow group block rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+              >
+                <span className="relative block aspect-video overflow-hidden rounded-2xl bg-zinc-800/80 ring-1 ring-white/[0.06] transition-all duration-300 group-hover:-translate-y-0.5 group-hover:ring-cyan-400/40">
+                  {v.cover ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={coverProxyUrl(v.cover, "netease")} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.05]" />
+                  ) : null}
+                  {v.duration > 0 && (
+                    <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-zinc-200">{formatDuration(v.duration)}</span>
+                  )}
+                </span>
+                <span className="mt-2 block truncate text-[13px] font-semibold text-zinc-200 group-hover:text-white">{v.name}</span>
+                {v.publish_time && <span className="mt-0.5 block text-[11px] text-zinc-500">{v.publish_time}</span>}
+              </motion.button>
+            ))}
+      </div>
+      {!loading && !videos.length && !error && <p className="py-14 text-center text-sm text-zinc-500">暂无视频</p>}
+      {hasMore && !loading && !!videos.length && <LoadMoreButton loading={loading} onClick={loadMore} />}
+      <MvPlayModal mv={playing} onClose={() => setPlaying(null)} onPlaySimilar={setPlaying} />
     </>
   );
 }

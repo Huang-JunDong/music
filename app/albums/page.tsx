@@ -8,16 +8,18 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "motion/react";
-import { Disc3, RefreshCw, AlertTriangle, ChevronDown, Sparkles, Heart, Loader2 } from "lucide-react";
+import { Disc3, RefreshCw, AlertTriangle, ChevronDown, Sparkles, Heart, Loader2, AudioLines } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
-import { apiNewAlbums, apiFavAlbums, apiSubAlbum } from "@/lib/client/api";
+import { apiNewAlbums, apiFavAlbums, apiSubAlbum, apiAlbumList } from "@/lib/client/api";
 import { coverProxyUrl, sourceMeta } from "@/lib/play-url";
 import type { Playlist } from "@/lib/types";
 
 const AREAS = ["全部", "华语", "港台", "欧美", "日本", "韩国"] as const;
+/** P1 B4：流派筛选（album_list/album_list_style，网易专属 tab） */
+const STYLE_FILTERS = ["全部", "流行", "摇滚", "民谣", "电子", "说唱", "古风", "爵士"] as const;
 
-type TabKey = "new" | "fav";
+type TabKey = "new" | "fav" | "list";
 
 /* ---------- 模块级缓存 ---------- */
 const albumCacheMap = new Map<string, { albums: Playlist[]; hasMore: boolean }>();
@@ -37,24 +39,28 @@ function AlbumsInner() {
   const router = useRouter();
   const source = params.get("source") === "qq" ? "qq" : "netease";
   const rawTab = params.get("tab") ?? "new";
-  const tab: TabKey = rawTab === "fav" ? "fav" : "new";
+  const tab: TabKey = rawTab === "fav" ? "fav" : rawTab === "list" ? "list" : "new";
   const rawArea = params.get("area") ?? "";
   const area = (AREAS as readonly string[]).includes(rawArea) ? rawArea : "全部";
+  const rawStyle = params.get("style") ?? "";
+  const style = (STYLE_FILTERS as readonly string[]).includes(rawStyle) ? rawStyle : "全部";
 
   const [favTick, setFavTick] = useState(0); /* 收藏集变更后重渲染卡片心形 */
 
   const replaceQuery = useCallback(
-    (next: { source?: string; tab?: string; area?: string }) => {
+    (next: { source?: string; tab?: string; area?: string; style?: string }) => {
       const p = new URLSearchParams();
       const s = next.source ?? source;
       const t = next.tab ?? tab;
       const a = next.area ?? area;
+      const st = next.style ?? style;
       p.set("source", s);
       p.set("tab", t);
-      if (t === "new" && a !== "全部") p.set("area", a);
+      if (t !== "fav" && a !== "全部") p.set("area", a);
+      if (t === "list" && st !== "全部") p.set("style", st);
       router.replace(`/albums?${p.toString()}`, { scroll: false });
     },
-    [router, source, tab, area],
+    [router, source, tab, area, style],
   );
 
   return (
@@ -99,16 +105,18 @@ function AlbumsInner() {
           <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="新碟分类">
             {[
               { key: "new" as TabKey, label: "新碟上架", icon: Sparkles },
+              { key: "list" as TabKey, label: "语种流派", icon: AudioLines },
               { key: "fav" as TabKey, label: "我的收藏", icon: Heart },
             ].map((t) => {
               const Icon = t.icon;
               const active = t.key === tab;
+              if (t.key === "list" && source === "qq") return null; /* 语种流派筛选为网易 album_list 专属 */
               return (
                 <button
                   key={t.key}
                   role="tab"
                   aria-selected={active}
-                  onClick={() => replaceQuery({ tab: t.key })}
+                  onClick={() => replaceQuery({ tab: t.key, source: t.key === "list" ? "netease" : undefined })}
                   className={`flex min-h-[38px] items-center gap-1 rounded-full border px-3 text-xs font-medium transition-all active:scale-95 ${
                     active
                       ? "border-violet-400/40 bg-violet-500/20 text-violet-100 ring-1 ring-violet-400/30"
@@ -122,8 +130,8 @@ function AlbumsInner() {
             })}
           </div>
         </div>
-        {/* 地区 chips（仅新碟 tab） */}
-        {tab === "new" && (
+        {/* 地区 chips（新碟 + 语种流派 tab） */}
+        {tab !== "fav" && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {AREAS.map((a) => {
               const active = a === area;
@@ -144,10 +152,32 @@ function AlbumsInner() {
             })}
           </div>
         )}
+        {/* 流派 chips（仅语种流派 tab，album_list_style 精选变体） */}
+        {tab === "list" && (
+          <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="流派筛选">
+            {STYLE_FILTERS.map((s) => {
+              const active = s === style;
+              return (
+                <button
+                  key={s}
+                  onClick={() => replaceQuery({ style: s })}
+                  aria-pressed={active}
+                  className={`flex min-h-[32px] items-center rounded-full border px-2.5 text-[11px] font-medium transition-all active:scale-95 ${
+                    active
+                      ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-100"
+                      : "border-white/[0.08] bg-white/[0.02] text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="mt-4">
-        <AlbumGrid key={`${source}:${tab}:${area}`} source={source} tab={tab} area={area} favTick={favTick} onFavChange={() => setFavTick((v) => v + 1)} />
+        <AlbumGrid key={`${source}:${tab}:${area}:${style}`} source={source} tab={tab} area={area} style={style} favTick={favTick} onFavChange={() => setFavTick((v) => v + 1)} />
       </div>
     </div>
   );
@@ -159,16 +189,18 @@ function AlbumGrid({
   source,
   tab,
   area,
+  style,
   favTick,
   onFavChange,
 }: {
   source: string;
   tab: TabKey;
   area: string;
+  style: string;
   favTick: number;
   onFavChange: () => void;
 }) {
-  const cacheKey = `${source}:${tab}:${tab === "new" ? area : "fav"}`;
+  const cacheKey = `${source}:${tab}:${tab === "fav" ? "fav" : `${area}:${style}`}`;
   const initial = albumCacheMap.get(cacheKey);
   const [albums, setAlbums] = useState<Playlist[]>(initial?.albums ?? []);
   const [hasMore, setHasMore] = useState(initial?.hasMore ?? true);
@@ -201,7 +233,7 @@ function AlbumGrid({
     setAlbums([]);
     setLoading(true);
     setError("");
-    const req = tab === "new" ? apiNewAlbums(source, area, 1) : apiFavAlbums(source, 1);
+    const req = tab === "new" ? apiNewAlbums(source, area, 1) : tab === "list" ? apiAlbumList(source, area, style === "全部" ? "" : style, 1) : apiFavAlbums(source, 1);
     req
       .then((r) => {
         if (!alive) return;
@@ -228,7 +260,7 @@ function AlbumGrid({
     if (loadingMore || !hasMore) return;
     const next = page + 1;
     setLoadingMore(true);
-    const req = tab === "new" ? apiNewAlbums(source, area, next) : apiFavAlbums(source, next);
+    const req = tab === "new" ? apiNewAlbums(source, area, next) : tab === "list" ? apiAlbumList(source, area, style === "全部" ? "" : style, next) : apiFavAlbums(source, next);
     req
       .then((r) => {
         if (r.error) throw new Error(r.error);
@@ -259,7 +291,12 @@ function AlbumGrid({
       onFavChange();
       /* 收藏 tab 内取消 → 从列表移除 */
       if (tab === "fav" && liked) {
-        setAlbums((prev) => prev.filter((a) => a.id !== album.id));
+        setAlbums((prev) => {
+          const next = prev.filter((a) => a.id !== album.id);
+          /* 审核整改 R2-F18：同步模块级缓存（原漏同步，切 tab 返回时已取消专辑复活） */
+          albumCacheMap.set(cacheKey, { albums: next, hasMore });
+          return next;
+        });
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "操作失败（可能需要登录对应源账号）");

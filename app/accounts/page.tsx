@@ -8,6 +8,7 @@ import { motion } from "motion/react";
 import { QrCode, Sparkles, ShieldCheck, Check } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { MySourceAccounts } from "@/components/my-source-accounts";
+import { SourceVipSection } from "@/components/source-vip-section";
 
 /** 登录后功能生效范围 */
 const EFFECT_LIST = [
@@ -66,6 +67,7 @@ export default function AccountsPage() {
         subtitle="扫码登录自己的网易云 / QQ 账号，同步个人收藏歌单与会员内容"
       />
       <MySourceAccounts />
+      <SourceVipSection />
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <InfoCard icon={Sparkles} title="登录后全站生效" items={EFFECT_LIST} delay={0.08} />
         <InfoCard icon={ShieldCheck} title="凭证安全" items={SECURITY_LIST} delay={0.14} />

@@ -9,11 +9,12 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
-import { Users, RefreshCw, AlertTriangle, ChevronDown, Trophy, UserRound, Crown } from "lucide-react";
+import { Users, RefreshCw, AlertTriangle, ChevronDown, Trophy, UserRound, Crown, Heart } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
-import { apiArtistLibrary, apiArtistToplist } from "@/lib/client/api";
+import { apiArtistLibrary, apiArtistToplist, apiFollowedArtists } from "@/lib/client/api";
 import { coverProxyUrl, sourceMeta } from "@/lib/play-url";
-import type { Artist } from "@/lib/types";
+import type { Artist, FollowedArtist } from "@/lib/types";
 
 const AREAS = ["全部", "华语", "港台", "欧美", "日本", "韩国"] as const;
 const SEXES = ["全部", "男", "女", "组合"] as const;
@@ -25,7 +26,7 @@ const TOPLIST_TYPES = [
   { type: 4, label: "韩语" },
 ] as const;
 
-type TabKey = "library" | "toplist";
+type TabKey = "library" | "toplist" | "followed";
 
 /* 模块级分页缓存：key = source:area:sex:initial */
 const libraryCache = new Map<string, { artists: Artist[]; hasMore: boolean }>();
@@ -43,7 +44,12 @@ function ArtistsInner() {
   const params = useSearchParams();
   const router = useRouter();
   const source = params.get("source") === "qq" ? "qq" : "netease";
-  const tab: TabKey = source === "netease" && params.get("tab") === "toplist" ? "toplist" : "library";
+  const tab: TabKey =
+    source === "netease" && params.get("tab") === "toplist"
+      ? "toplist"
+      : params.get("tab") === "followed"
+        ? "followed"
+        : "library";
   const rawArea = params.get("area") ?? "";
   const area = (AREAS as readonly string[]).includes(rawArea) ? rawArea : "全部";
   const rawSex = params.get("sex") ?? "";
@@ -58,6 +64,7 @@ function ArtistsInner() {
     p.set("source", next.source ?? source);
     const t = next.tab ?? tab;
     if (t === "toplist") p.set("tab", "toplist");
+    if (t === "followed") p.set("tab", "followed");
     const a = next.area ?? area;
     if (a !== "全部") p.set("area", a);
     const s = next.sex ?? sex;
@@ -124,6 +131,25 @@ function ArtistsInner() {
                 <span className="relative">歌手榜</span>
               </button>
             )}
+            {/* P1 C2：我的关注（artist_sublist · QQ GetFollowSingerList，双源） */}
+            <button
+              role="tab"
+              aria-selected={tab === "followed"}
+              onClick={() => replaceQuery({ tab: "followed" })}
+              className={`relative flex min-h-[40px] items-center gap-1.5 rounded-lg px-3.5 text-[13px] font-medium transition-colors ${
+                tab === "followed" ? "text-white" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {tab === "followed" && (
+                <motion.span
+                  layoutId="artists-source-pill"
+                  className="absolute inset-0 rounded-lg bg-gradient-to-r from-rose-500/25 to-fuchsia-500/20 ring-1 ring-rose-400/30"
+                  transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                />
+              )}
+              <Heart className="relative h-3.5 w-3.5" aria-hidden="true" />
+              <span className="relative">我的关注</span>
+            </button>
           </div>
         </div>
 
@@ -192,6 +218,8 @@ function ArtistsInner() {
           >
             {tab === "toplist" ? (
               <ToplistView />
+            ) : tab === "followed" ? (
+              <FollowedView source={source} />
             ) : (
               <LibraryView source={source} area={area} sex={sex} initial={initial} />
             )}
@@ -357,6 +385,141 @@ function LibraryView({ source, area, sex, initial }: { source: string; area: str
             {loadingMore ? "加载中…" : "加载更多"}
           </button>
         </div>
+      )}
+    </>
+  );
+}
+
+/* ================= 我的关注（P1 C2：artist_sublist · QQ GetFollowSingerList） ================= */
+
+function FollowedView({ source }: { source: string }) {
+  const [artists, setArtists] = useState<FollowedArtist[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [needLogin, setNeedLogin] = useState(false);
+  const [page, setPage] = useState(1);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError("");
+    apiFollowedArtists(source, 1, 60)
+      .then((r) => {
+        if (!alive) return;
+        if (r.need_login || (r.error && /登录/.test(r.error))) {
+          setNeedLogin(true);
+          setArtists([]);
+          return;
+        }
+        if (r.error) {
+          setError(r.error);
+          setArtists([]);
+          return;
+        }
+        setNeedLogin(false);
+        setArtists(r.artists ?? []);
+        setHasMore(!!r.has_more);
+        setPage(1);
+      })
+      .catch((e) => alive && setError(e instanceof Error ? e.message : "加载失败"))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [source, retryKey]);
+
+  const loadMore = () => {
+    const next = page + 1;
+    setLoading(true);
+    apiFollowedArtists(source, next, 60)
+      .then((r) => {
+        if (r.error) throw new Error(r.error);
+        setArtists((prev) => [...prev, ...(r.artists ?? [])]);
+        setHasMore(!!r.has_more);
+        setPage(next);
+      })
+      .catch((e) => {
+        /* 审核整改 R2-F7：已有数据时错误卡不渲染（error && !artists.length 条件），
+           补 toast 让加载更多失败可感知 */
+        toast.error(e instanceof Error ? e.message : "加载更多失败");
+        setError(e instanceof Error ? e.message : "加载更多失败");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  if (needLogin) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/[0.04]">
+          <Heart className="h-7 w-7 text-zinc-500" aria-hidden="true" />
+        </span>
+        <p className="text-sm text-zinc-500">关注列表为个人数据，请先登录{sourceMeta(source).label}账号</p>
+        <a href="/accounts" className="flex min-h-[44px] items-center rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-5 text-[13px] font-semibold text-white">
+          去登录
+        </a>
+      </div>
+    );
+  }
+
+  if (error && !loading && !artists.length) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center" role="alert">
+        <AlertTriangle className="h-7 w-7 text-red-300" aria-hidden="true" />
+        <p className="text-sm text-red-200">{error}</p>
+        <button onClick={() => setRetryKey((k) => k + 1)} className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-white/[.1] px-4 text-[13px] text-zinc-300 hover:border-violet-400/40">
+          <RefreshCw className="h-4 w-4" aria-hidden="true" /> 重试
+        </button>
+      </div>
+    );
+  }
+
+  if (loading && !artists.length) {
+    return (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5" aria-busy="true">
+        {Array.from({ length: 10 }).map((_, i) => (
+          <div key={i} className="shimmer aspect-square rounded-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!artists.length) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <Heart className="h-8 w-8 text-zinc-600" aria-hidden="true" />
+        <p className="text-sm text-zinc-500">还没有关注任何歌手（在歌手主页点击"+ 关注"）</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {artists.map((a, i) => (
+          <motion.div key={`${a.source}-${a.id}-${i}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i * 0.03, 0.4) }}>
+            <Link href={`/artist/${a.id}?source=${a.source}`} className="group block text-center" aria-label={`查看歌手 ${a.name}`}>
+              <div className="mx-auto aspect-square w-full max-w-[140px] overflow-hidden rounded-full bg-zinc-800/80 ring-1 ring-white/[0.06] transition-all group-hover:ring-rose-400/40">
+                {a.avatar ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={coverProxyUrl(a.avatar, a.source)} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.06]" />
+                ) : (
+                  <div className="flex h-full items-center justify-center">
+                    <UserRound className="h-8 w-8 text-zinc-600" aria-hidden="true" />
+                  </div>
+                )}
+              </div>
+              <p className="mt-2 truncate text-[13px] font-semibold text-zinc-200 group-hover:text-rose-200">{a.name}</p>
+              {a.follower_count ? <p className="truncate text-[11px] text-zinc-500">{a.follower_count.toLocaleString("zh-CN")} 粉丝</p> : null}
+            </Link>
+          </motion.div>
+        ))}
+      </div>
+      {hasMore && !loading && (
+        <button onClick={loadMore} className="mt-4 flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-2xl border border-white/[.08] text-[13px] text-zinc-400 transition-colors hover:border-rose-400/40 hover:text-zinc-100">
+          <ChevronDown className="h-4 w-4" aria-hidden="true" /> 加载更多
+        </button>
       )}
     </>
   );

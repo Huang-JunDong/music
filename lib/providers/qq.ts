@@ -31,6 +31,14 @@ import type {
   CommentItem,
   CommentListResult,
   SourceLoginProfile,
+  UserVipInfo,
+  ListenStats,
+  DiscoverBlock,
+  SongWiki,
+  FollowedArtist,
+  SearchMultimatch,
+  CommentTarget,
+  UserProfile,
 } from "../types";
 import { UpstreamError } from "../types";
 import { firstNonEmpty } from "../http";
@@ -249,6 +257,10 @@ function sweepSessions<T extends { at: number }>(map: Map<string, T>): void {
     if (now - v.at > QR_SESSION_TTL_MS) map.delete(k);
   }
 }
+
+/** 综合搜索链式翻页游标（三审 R3）：do_search_v2 翻页依赖上一页响应 meta.nextpage_start 对象，
+ *  以 keyword|musicid|页码 为键记录；key = `${keyword}|${musicid}|${page}` */
+const generalSearchCursorCache = new Map<string, Record<string, unknown>>();
 
 export const qq: MusicProvider = {
   name: "qq",
@@ -1206,6 +1218,48 @@ export const qq: MusicProvider = {
     }
   },
 
+  /** P1 A3 修复：用户资料（QQ UnifiedHomepage GetHomepageHeader——Info.BaseInfo 昵称/头像 + Info 层粉丝·关注统计） */
+  async getUserProfile(uid?: string): Promise<UserProfile> {
+    const c = client();
+    if (!c.credential.musicid && !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    /* euin 说明：微信登录凭证带 encryptUin；QQ 号登录常为空——空 euin 上游 code=-1，
+       无效 euin 会回退为凭证本人主页（实测）。显式 uid 仅查该 uid；自查缺失时自视回退 */
+    const explicitUid = (uid ?? "").trim();
+    const ownEuin = explicitUid || (c.credential.encryptUin ?? "").trim();
+    const attempts = explicitUid || ownEuin ? [ownEuin, ...(explicitUid ? [] : (["self"] as const))] : ["self"];
+    for (const euin of attempts) {
+      try {
+        /* client.invoke 原始响应：Info 在顶层（/api/qq 代理的 {code,data} 包装仅存在于 HTTP 层） */
+        const resp = (await qqUser.getHomepage(c, euin)) as {
+          code?: number;
+          Info?: {
+            BaseInfo?: { Name?: string; Avatar?: string; BigAvatar?: string; EncryptedUin?: string };
+            FansNum?: string | number;
+            FollowNum?: string | number;
+            FriendsNum?: string | number;
+          };
+          data?: { Info?: Record<string, unknown> };
+        };
+        const info = (resp?.Info ?? resp?.data?.Info ?? {}) as Record<string, unknown>;
+        const base = (info.BaseInfo ?? {}) as Record<string, unknown>;
+        const nick = stripEm(String(base.Name ?? "")).trim();
+        if (!nick) continue;
+        return {
+          source: "qq",
+          id: c.credential.musicid ? String(c.credential.musicid) : String(base.EncryptedUin ?? euin),
+          nickname: nick,
+          avatar: normalizeQQCover(String(base.BigAvatar ?? base.Avatar ?? "")),
+          follow_count: Number(info.FollowNum ?? 0) || undefined,
+          followed_count: Number(info.FansNum ?? 0) || undefined,
+          link: `https://y.qq.com/n/ryqq/profile`,
+        };
+      } catch {
+        /* try next euin */
+      }
+    }
+    throw new Error("获取 QQ 用户资料失败");
+  },
+
   async sendPhoneCode(phone: string, countryCode?: number): Promise<void> {
     const c = client();
     const n = Number(phone.replace(/\D/g, ""));
@@ -1296,13 +1350,24 @@ export const qq: MusicProvider = {
         ? qqSinger.IndexType.HASH
         : qqSinger.IndexType.ALL;
 
-    const resp = (await qqSinger.getSingerListIndex(c, {
-      area,
-      sex,
-      index,
-      page: opts.page,
-      num: l,
-    })) as {
+    /* P1 C2：风格筛选走 GetSingerList（支持 genre 维度；返回热门歌手一页），否则走索引分页版 */
+    const genreMap: Record<string, number> = {
+      全部: qqSinger.GenreType.ALL,
+      流行: qqSinger.GenreType.POP,
+      说唱: qqSinger.GenreType.RAP,
+      摇滚: qqSinger.GenreType.ROCK,
+      电子: qqSinger.GenreType.ELECTRONIC,
+      民谣: qqSinger.GenreType.FOLK,
+      国风: qqSinger.GenreType.CHINESE_STYLE,
+      爵士: qqSinger.GenreType.JAZZ,
+      古典: qqSinger.GenreType.CLASSICAL,
+    };
+    const genre = opts.genre && opts.genre !== "全部" ? (genreMap[opts.genre] ?? qqSinger.GenreType.ALL) : undefined;
+
+    const resp = (await (genre !== undefined
+      ? qqSinger.getSingerList(c, { area, sex, genre })
+      : qqSinger.getSingerListIndex(c, { area, sex, index, page: opts.page, num: l })
+    )) as {
       singers?: { singer_id?: number | string; singer_mid?: string; singer_name?: string; singer_pic?: string; country?: string }[];
       singerlist?: { singer_id?: number | string; singer_mid?: string; singer_name?: string; singer_pic?: string }[];
       total?: number;
@@ -1383,8 +1448,21 @@ export const qq: MusicProvider = {
 
   // ---------------- 私人电台（RadarRecommend 雷达推荐作 FM 曲库） ----------------
 
-  async getFmSongs(): Promise<Song[]> {
+  async getFmSongs(mode?: string): Promise<Song[]> {
     const c = client();
+    /* P1 C4：mode=guess → 猜你喜欢（MbTrackRadioSvr id=99 备用流）；雷达为主，失败/猜你喜欢自动回退 */
+    if (mode === "guess") {
+      try {
+        const guess = (await qqRecommend.getGuessRecommend(c)) as { VecSongs?: { Track?: QQTrack }[]; tracks?: QQTrack[] };
+        const songs = (guess?.VecSongs ?? guess?.tracks ?? [])
+          .map((e) => (e as { Track?: QQTrack }).Track ?? (e as QQTrack))
+          .filter((t): t is QQTrack => !!t?.id)
+          .map(trackToSong);
+        if (songs.length) return songs;
+      } catch {
+        /* 回退雷达推荐 */
+      }
+    }
     const resp = (await qqRecommend.getRadarRecommend(c, 1)) as {
       VecSongs?: { Track?: QQTrack }[];
       HasMore?: boolean;
@@ -1624,7 +1702,8 @@ export const qq: MusicProvider = {
           play_count: item.listen_num ?? 0,
           creator: "",
           description: item.diss_desc ?? "",
-          link: `https://y.qq.com/n/ryqq/playlist/${tid !== "0" ? tid : ""}`,
+          /* 三审 R3：tid="0" 的目录占位歌单不生成空尾链接（原 .../playlist/ 无效跳转） */
+          link: tid !== "0" ? `https://y.qq.com/n/ryqq/playlist/${tid}` : "https://y.qq.com/portal/playlist.html",
         });
       }
     } catch {
@@ -1725,6 +1804,462 @@ export const qq: MusicProvider = {
       loginResult.cookie = credentialToCookie(result.credential);
     }
     return loginResult;
+  },
+
+  // ---- P1 Wave A：QQ 用户资产（vip_login_base VIP 信息 · GetProfileReport 音乐基因） ----
+
+  /** VIP 登录基础信息 → UserVipInfo（绿钻判定 + 到期时间） */
+  async getUserVipInfo(): Promise<UserVipInfo> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    const resp = (await qqUser.getVipInfo(c)) as Record<string, unknown>;
+    const data = (resp?.data ?? resp ?? {}) as Record<string, unknown>;
+    const isVip = Number(data.is_vip ?? data.isVip ?? 0) === 1;
+    const expire = Number(data.vip_expire_time ?? data.expire_time ?? 0);
+    return {
+      source: "qq",
+      is_vip: isVip,
+      vip_name: isVip ? "豪华绿钻" : "普通账号",
+      icon_url: typeof data.vip_icon === "string" ? data.vip_icon : undefined,
+      expire_at: expire > 0 ? expire : undefined,
+    };
+  },
+
+  /** 音乐基因画像（GetProfileReport）→ ListenStats 标签卡片（活动型结构动态，扁平化降级渲染） */
+  async getListenStats(): Promise<ListenStats> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    const euin = c.credential.encryptUin;
+    const resp = (await qqUser.getMusicGene(c, euin)) as Record<string, unknown>;
+    const data = (resp?.data ?? resp ?? {}) as Record<string, unknown>;
+    /* 修复：上游键名为 UserInfoCard.NickName 之类内部路径，直接展示可读性差且泄露加密账号——
+       映射为中文标签，null = 丢弃（敏感/无语义键） */
+    const GENE_LABELS: Record<string, string | null> = {
+      "UserInfoCard.NickName": "昵称",
+      "UserInfoCard.EncryptionAccount": null,
+      "ListeningReport.ShowType": null,
+      "ListeningReport.CurrentMonth": "报告月份",
+      "BPM.MinScore": "BPM 最低",
+      "BPM.MaxScore": "BPM 最高",
+      "Grooving.Level": "律动等级",
+      IsVisitAccount: null,
+    };
+    const tags: { name: string; value: string }[] = [];
+    const pushTag = (label: string, value: unknown) => {
+      if (typeof value === "number") tags.push({ name: label, value: value.toLocaleString("zh-CN") });
+      else if (typeof value === "string" && value.trim() && value.length <= 48) tags.push({ name: label, value: value.trim() });
+    };
+    for (const [key, value] of Object.entries(data)) {
+      if (value === null || value === undefined) continue;
+      if (typeof value === "object") {
+        for (const [k2, v2] of Object.entries(value as Record<string, unknown>)) {
+          if (tags.length >= 12) break;
+          const rawLabel = `${key}.${k2}`;
+          const mapped = GENE_LABELS[rawLabel];
+          if (mapped === null) continue; // 显式丢弃
+          /* 未知嵌套键：排序卡（sortCard.N / SortArray.N）/加密串等噪音丢弃 */
+          if (mapped === undefined && (/^(sortCard|SortArray)\./i.test(rawLabel) || /encrypt|uin|token|key/i.test(rawLabel))) continue;
+          pushTag(mapped ?? rawLabel, v2);
+        }
+      } else {
+        const mapped = GENE_LABELS[key];
+        if (mapped !== null) pushTag(mapped ?? key, value);
+      }
+      if (tags.length >= 12) break;
+    }
+    return { source: "qq", gene_tags: tags };
+  },
+
+  // ---- P1 Wave B：QQ 内容扩展（get_recommend_feed 首页聚合 · GetSongLabels 歌曲标签） ----
+
+  /** 首页推荐 Feed（get_recommend_feed）→ 统一区块（卡片结构按活动配置动态，容错扫描歌单卡片） */
+  async getHomepageBlocks(): Promise<DiscoverBlock[]> {
+    const c = client();
+    const resp = (await qqRecommend.getHomeFeed(c)) as Record<string, unknown>;
+    const data = (resp?.data ?? resp ?? {}) as Record<string, unknown>;
+    const block: DiscoverBlock = { key: "qq_home_feed", title: "为你推荐" };
+    const playlists: Playlist[] = [];
+    const seen = new Set<string>();
+    const scan = (node: unknown, depth: number) => {
+      if (depth > 6 || !node || typeof node !== "object" || playlists.length >= 12) return;
+      if (Array.isArray(node)) {
+        for (const item of node) scan(item, depth + 1);
+        return;
+      }
+      const obj = node as Record<string, unknown>;
+      const id = obj.id ?? obj.tid ?? obj.dissid ?? obj.diss_id;
+      const name = typeof obj.title === "string" ? obj.title : typeof obj.name === "string" ? obj.name : undefined;
+      const pic = typeof obj.picurl === "string" ? obj.picurl : typeof obj.logo === "string" ? obj.logo : typeof obj.cover === "string" ? obj.cover : undefined;
+      if (id !== undefined && name && pic) {
+        const key = String(id);
+        if (!seen.has(key) && /^\d+$/.test(key)) {
+          seen.add(key);
+          playlists.push({
+            source: "qq",
+            id: key,
+            name: name.trim(),
+            cover: normalizeQQCover(pic),
+            track_count: Number(obj.song_cnt ?? obj.songnum ?? 0),
+            play_count: Math.round(Number(obj.listen_num ?? 0)),
+            creator: "",
+            description: "",
+            link: `https://y.qq.com/n/ryqq/playlist/${key}`,
+          });
+        }
+      }
+      for (const value of Object.values(obj)) {
+        if (value && typeof value === "object") scan(value, depth + 1);
+      }
+    };
+    scan(data, 0);
+    if (playlists.length) block.playlists = playlists;
+    return playlists.length ? [block] : [];
+  },
+
+  /** 歌曲标签（GetSongLabels：曲风/语种/场景，曲风详情页与歌曲百科的交叉入口） */
+  async getSongLabels(songId: string): Promise<string[]> {
+    const c = client();
+    const resp = (await qqSong.getLabels(c, Number(songId))) as Record<string, unknown>;
+    const labels: string[] = [];
+    const collect = (node: unknown, depth: number) => {
+      if (depth > 5 || !node || typeof node !== "object" || labels.length >= 12) return;
+      if (Array.isArray(node)) {
+        for (const item of node) collect(item, depth + 1);
+        return;
+      }
+      const obj = node as Record<string, unknown>;
+      const name = typeof obj.name === "string" ? obj.name.trim() : "";
+      if (name && typeof obj.id !== "undefined") labels.push(name);
+      for (const value of Object.values(obj)) {
+        if (value && typeof value === "object") collect(value, depth + 1);
+      }
+    };
+    collect(resp?.data ?? resp, 0);
+    return labels;
+  },
+
+  /** 收藏/取消收藏歌单（CgiGetPlaylistFavInfo 写侧：FavPlaylist / CancelFavPlaylist） */
+  async subscribePlaylist(playlistId: string, sub: boolean): Promise<void> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    const id = Number(playlistId);
+    if (!Number.isFinite(id) || id <= 0) throw new Error("无效的歌单 id");
+    const ok = sub
+      ? await qqUser.favSonglist(c, id)
+      : await qqUser.unfavSonglist(c, id);
+    if (!ok) throw new Error(sub ? "收藏歌单失败" : "取消收藏失败");
+  },
+
+  // ---- P1 Wave C：QQ 体验增强 ----
+
+  /** C1 歌曲百科（QQ：GetSongLabels 标签 + SongProducer 制作人 + GetOtherVersionSongs 其他版本） */
+  async getSongWiki(song: Song): Promise<SongWiki> {
+    const c = client();
+    const bizId = atoi(song.extra?.song_id ?? song.id);
+    const mid = song.extra?.songmid ?? song.id;
+    const [labelsRes, producerRes, versionsRes] = await Promise.allSettled([
+      this.getSongLabels!(String(mid)),
+      qqSong.getProducer(c, /^\d+$/.test(mid) ? Number(mid) : mid),
+      qqSong.getOtherVersion(c, /^\d+$/.test(mid) ? Number(mid) : mid),
+    ]);
+    const wiki: SongWiki = { source: "qq", song_id: song.id, sections: [] };
+    if (labelsRes.status === "fulfilled" && labelsRes.value.length) {
+      wiki.labels = labelsRes.value;
+      wiki.sections.push({ title: "歌曲标签", content: labelsRes.value.join(" · ") });
+    }
+    if (producerRes.status === "fulfilled") {
+      const data = (producerRes.value as Record<string, unknown>)?.data ?? (producerRes.value as Record<string, unknown>);
+      const names: string[] = [];
+      const scan = (node: unknown, depth: number) => {
+        if (depth > 5 || !node || typeof node !== "object" || names.length >= 8) return;
+        if (Array.isArray(node)) {
+          for (const item of node) scan(item, depth + 1);
+          return;
+        }
+        const obj = node as Record<string, unknown>;
+        if (typeof obj.name === "string" && obj.name.trim()) names.push(obj.name.trim());
+        for (const v of Object.values(obj)) if (v && typeof v === "object") scan(v, depth + 1);
+      };
+      scan(data, 0);
+      if (names.length) {
+        wiki.producer = names.join("、");
+        wiki.sections.push({ title: "制作人", content: names.join("、") });
+      }
+    }
+    if (versionsRes.status === "fulfilled") {
+      const data = (versionsRes.value as Record<string, unknown>)?.data ?? (versionsRes.value as Record<string, unknown>);
+      const list = (data as { list?: QQTrack[]; songList?: QQTrack[] })?.list ?? (data as { songList?: QQTrack[] })?.songList ?? [];
+      const versions = list.slice(0, 10).map(trackToSong).filter((s) => s.id);
+      if (versions.length) wiki.other_versions = versions;
+    }
+    return wiki;
+  },
+
+  /** C1 单曲收藏数（GetSongFansNumberById） */
+  async getSongFavNum(song: Song): Promise<number> {
+    const c = client();
+    const songId = atoi(song.extra?.song_id ?? song.id);
+    if (!songId) throw new Error("qq fav num requires numeric song_id");
+    const resp = (await qqSong.getFavNum(c, [songId])) as Record<string, unknown>;
+    const data = (resp?.data ?? resp ?? {}) as { songs?: { cnt?: number }[]; list?: { cnt?: number }[] };
+    const item = data.songs?.[0] ?? data.list?.[0];
+    return Number(item?.cnt ?? 0);
+  },
+
+  /** C2 歌手长文简介与统计（GetSingerDetail wiki + GetHomepageTabDetail IntroductionTab） */
+  async getArtistWiki(artistId: string): Promise<{ desc: string; follower_count?: number }> {
+    const c = client();
+    const [descRes, tabRes] = await Promise.allSettled([
+      qqSinger.getDesc(c, [artistId], { photos: false, pic: false }),
+      qqSinger.getTabDetail(c, artistId, "WIKI"),
+    ]);
+    let desc = "";
+    let followerCount: number | undefined;
+    if (descRes.status === "fulfilled") {
+      const data = (descRes.value as Record<string, unknown>)?.data ?? (descRes.value as Record<string, unknown>);
+      const singers = (data as { singers?: { info?: { desc?: string; Desc?: string; fans_num?: number } | { desc?: string; Desc?: string; fans_num?: number }[] } })?.singers;
+      const info = Array.isArray(singers) ? singers[0]?.info : singers?.info;
+      desc = String(info?.desc ?? info?.Desc ?? "").trim();
+      /* 审核整改 C-13：fans_num 可用时回填 follower_count（原类型声明但从不回填） */
+      followerCount = typeof info?.fans_num === "number" ? info.fans_num : undefined;
+    }
+    if (!desc && tabRes.status === "fulfilled") {
+      const data = (tabRes.value as Record<string, unknown>)?.data ?? (tabRes.value as Record<string, unknown>);
+      const wiki = (data as { wiki?: { desc?: string; Desc?: string } })?.wiki;
+      desc = String(wiki?.desc ?? wiki?.Desc ?? "").trim();
+    }
+    return { desc, follower_count: followerCount };
+  },
+
+  /** C2 已关注歌手（GetFollowSingerList） */
+  async getFollowedArtists(page: number, limit: number): Promise<{ artists: FollowedArtist[]; has_more: boolean }> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    const num = Math.min(Math.max(limit, 1), 50);
+    /* 审核整改 C-07：page 钳制（防 0/负值产生负偏移与 has_more 误判） */
+    const p = Math.max(page, 1);
+    const resp = (await qqUser.getFollowSingers(c, c.credential.encryptUin, { page: p, num: num })) as {
+      singer_list?: { mid?: string; name?: string; pic?: string; fans_num?: number; has_follow?: number }[];
+      total?: number;
+      hasmore?: number | boolean;
+      HasMore?: number | boolean;
+    };
+    const artists: FollowedArtist[] = (resp?.singer_list ?? [])
+      .filter((s) => s.mid)
+      .map((s) => ({
+        source: "qq",
+        id: String(s.mid),
+        name: stripEm(String(s.name ?? "")).trim(),
+        avatar: normalizeQQCover(s.pic ?? ""),
+        follower_count: s.fans_num,
+        followed: true,
+        link: `https://y.qq.com/n/ryqq/singer/${s.mid}`,
+      }));
+    const total = resp?.total ?? 0;
+    return { artists, has_more: resp?.hasmore === 1 || resp?.hasmore === true || resp?.HasMore === 1 || (total > p * num) };
+  },
+
+  /** C3 推荐评论（GetRecommendComments；sort=recommended 时路由层分派到此） */
+  async getRecommendedComments(song: Song, opts: { page: number; limit: number }): Promise<CommentListResult> {
+    const bizId = atoi(song.extra?.song_id ?? song.id);
+    if (!bizId) throw new Error("qq recommended comments requires numeric song_id");
+    const c = client();
+    const l = Math.min(Math.max(opts.limit, 1), 50);
+    /* 审核整改 C-07：page 钳制（防 pageNum 为 0/负/NaN 序列化为 null） */
+    const page = Math.max(opts.page, 1);
+    const resp = (await qqComment.getRecommendComments(c, bizId, { pageNum: page, pageSize: l })) as {
+      CommentList?: { Comments?: { CmId?: string | number; Nick?: string; Avatar?: string; Content?: string; PubTime?: number; PraiseNum?: number; SubComments?: { CmId?: string; Nick?: string; Content?: string }[] }[] };
+      commenttotal?: number;
+      hasmore?: number | boolean;
+      HasMore?: number | boolean;
+    };
+    const comments: CommentItem[] = [];
+    for (const item of resp?.CommentList?.Comments ?? []) {
+      const id = String(item?.CmId ?? "").trim();
+      const content = stripEm(String(item?.Content ?? "")).trim();
+      if (!id || !content) continue;
+      const sub = item?.SubComments?.[0];
+      comments.push({
+        id,
+        content,
+        user: stripEm(String(item?.Nick ?? "")).trim() || "QQ用户",
+        avatar: normalizeQQCover(item?.Avatar ?? ""),
+        time: item?.PubTime ? relativeTimeQQ(item.PubTime) : "",
+        liked_count: item?.PraiseNum ?? 0,
+        reply_to: sub?.Nick ? { user: stripEm(String(sub.Nick)), content: stripEm(String(sub?.Content ?? "")).slice(0, 120) } : undefined,
+      });
+    }
+    const total = resp?.commenttotal ?? comments.length;
+    /* 三审 R3：has_more 判全四字段并以 total 兜底（对齐 getSongComments/getFollowedArtists） */
+    return {
+      comments,
+      total,
+      has_more:
+        resp?.hasmore === 1 ||
+        resp?.hasmore === true ||
+        resp?.HasMore === 1 ||
+        resp?.HasMore === true ||
+        total > page * l,
+    };
+  },
+
+  /** C3 评论总数（GetCommentCount：百科 Tab 徽标） */
+  async getSongCommentCount(song: Song): Promise<number> {
+    const bizId = atoi(song.extra?.song_id ?? song.id);
+    if (!bizId) throw new Error("qq comment count requires numeric song_id");
+    const c = client();
+    const resp = (await qqComment.getCommentCount(c, bizId)) as { CommentNum?: number; comment_num?: number };
+    return Number(resp?.CommentNum ?? resp?.comment_num ?? 0);
+  },
+
+  /** C5 即时搜索（smartbox_new.fcg：歌曲/歌手/专辑即时结果） */
+  async quickSearch(keyword: string): Promise<SearchMultimatch> {
+    const c = client();
+    const resp = (await qqSearch.quickSearch(c, keyword)) as {
+      song?: { list?: { mid?: string; name?: string; singer?: { name?: string }[]; albumMid?: string }[] };
+      singer?: { list?: { mid?: string; name?: string; pic?: string }[] };
+      album?: { list?: { mid?: string; name?: string; singerName?: string }[] };
+    };
+    const result: SearchMultimatch = {};
+    const songs: Song[] = (resp?.song?.list ?? []).slice(0, 5).map((s) => ({
+      source: "qq",
+      id: String(s.mid ?? ""),
+      name: stripEm(String(s.name ?? "")).trim(),
+      artist: (s.singer ?? []).map((x) => x.name ?? "").join("、"),
+      album: "",
+      duration: 0,
+      size: 0,
+      bitrate: 128,
+      cover: s.albumMid ? qqCover(s.albumMid) : "",
+      link: `https://y.qq.com/n/ryqq/songDetail/${s.mid}`,
+      extra: s.mid ? { songmid: s.mid } : undefined,
+    })).filter((s) => s.id);
+    const artists = (resp?.singer?.list ?? []).slice(0, 3).map((a) => ({
+      source: "qq" as const,
+      id: String(a.mid ?? ""),
+      name: stripEm(String(a.name ?? "")).trim(),
+      avatar: normalizeQQCover(a.pic ?? ""),
+    })).filter((a) => a.id);
+    const albums = (resp?.album?.list ?? []).slice(0, 3).map((al) => ({
+      source: "qq" as const,
+      id: String(al.mid ?? ""),
+      name: stripEm(String(al.name ?? "")).trim(),
+      cover: qqCover(al.mid ?? ""),
+      track_count: 0,
+      play_count: 0,
+      creator: al.singerName ?? "",
+      description: "",
+      link: `https://y.qq.com/n/ryqq/albumDetail/${al.mid}`,
+    })).filter((a) => a.id);
+    if (songs.length) {
+      result.card = { type: "song", id: songs[0].id, name: songs[0].name, cover: songs[0].cover, artist: songs[0].artist };
+      result.songs = songs;
+    } else if (artists.length) {
+      result.card = { type: "artist", id: artists[0].id, name: artists[0].name, cover: artists[0].avatar };
+      result.artists = artists;
+    } else if (albums.length) {
+      result.card = { type: "album", id: albums[0].id, name: albums[0].name, cover: albums[0].cover, artist: albums[0].creator };
+      result.albums = albums;
+    }
+    return result;
+  },
+
+  /** C5 综合搜索（do_search_v2 聚合：结构与 typed 搜索一致，容错提取 body.song/singer/album） */
+  async generalSearch(keyword: string, page: number, limit: number): Promise<SearchMultimatch> {
+    const c = client();
+    /* 三审 R3：翻页必须携带上一页响应的 nextpage_start 游标（参考 qqmusic_api search.py），
+       原仅 page_id 递增 → page>1 恒返回第一页；游标丢失时该页退化第一页（顺序重翻自愈） */
+    const p = Math.max(page, 1);
+    const cursorKey = `${keyword}|${c.credential.musicid ?? 0}`;
+    const pageStart = p > 1 ? (generalSearchCursorCache.get(`${cursorKey}|${p - 1}`) ?? null) : null;
+    const resp = (await qqSearch.generalSearch(c, keyword, { page: p, num: limit, pageStart })) as Record<string, unknown>;
+    const body = (resp?.body ?? resp ?? {}) as Record<string, unknown>;
+    const meta = body.meta as { nextpage_start?: Record<string, unknown> } | undefined;
+    if (meta?.nextpage_start && typeof meta.nextpage_start === "object") {
+      generalSearchCursorCache.set(`${cursorKey}|${p}`, meta.nextpage_start);
+      if (generalSearchCursorCache.size > 300) {
+        const oldest = generalSearchCursorCache.keys().next().value;
+        if (oldest !== undefined) generalSearchCursorCache.delete(oldest);
+      }
+    }
+    const result: SearchMultimatch = {};
+    const songArea = (body.song as Record<string, unknown> | undefined)?.list as unknown[] | undefined;
+    const songs: Song[] = (Array.isArray(songArea) ? songArea : [])
+      .slice(0, limit)
+      .map((raw) => trackToSong(raw as QQTrack))
+      .filter((s) => s.id);
+    const singerArea = (body.singer as Record<string, unknown> | undefined)?.list as { mid?: string; name?: string; pic?: string }[] | undefined;
+    const artists = (singerArea ?? []).slice(0, 3).map((a) => ({
+      source: "qq" as const,
+      id: String(a.mid ?? ""),
+      name: stripEm(String(a.name ?? "")).trim(),
+      avatar: normalizeQQCover(a.pic ?? ""),
+    })).filter((a) => a.id);
+    const albumArea = (body.album as Record<string, unknown> | undefined)?.list as { mid?: string; name?: string; singerName?: string }[] | undefined;
+    const albums = (albumArea ?? []).slice(0, 3).map((al) => ({
+      source: "qq" as const,
+      id: String(al.mid ?? ""),
+      name: stripEm(String(al.name ?? "")).trim(),
+      cover: qqCover(al.mid ?? ""),
+      track_count: 0,
+      play_count: 0,
+      creator: al.singerName ?? "",
+      description: "",
+      link: `https://y.qq.com/n/ryqq/albumDetail/${al.mid}`,
+    })).filter((a) => a.id);
+    if (songs.length) result.songs = songs;
+    if (artists.length) result.artists = artists;
+    if (albums.length) result.albums = albums;
+    /* 三审 R3：card 优先级统一为 song > artist > album（原 artists 存在时恒覆盖 song 卡，
+       与 quickSearch 声明的优先级矛盾，换源时最优匹配卡类型跳变） */
+    if (songs.length) result.card = { type: "song", id: songs[0].id, name: songs[0].name, cover: songs[0].cover, artist: songs[0].artist };
+    else if (artists.length) result.card = { type: "artist", id: artists[0].id, name: artists[0].name, cover: artists[0].avatar };
+    return result;
+  },
+
+  /** C6 凭证过期探测（login.checkExpired） */
+  async checkCredentialExpired(): Promise<boolean> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) return false;
+    /* 审核整改 C-06：网络故障/超时原样冒泡（调用方转 502 可读错误），
+       不再吞为 false —— 原实现把"探测失败"伪装成"凭证未过期"。 */
+    return await qqLogin.checkExpired(c);
+  },
+
+  /** C6 凭证续期（login.refreshCredential：刷新成功自动落库） */
+  async refreshCredential(): Promise<void> {
+    const c = client();
+    if (!c.credential.musicid || !c.credential.musickey) throw new Error("需要登录QQ音乐账号");
+    const fresh = await qqLogin.refreshCredential(c);
+    if (fresh?.musickey) {
+      try {
+        saveCredential(fresh);
+      } catch {
+        /* 存储失败不影响会话内生效 */
+      }
+      vipCache = null;
+    }
+  },
+
+  /** C7 歌曲相关 MV（GetSongRelatedMv，播放页入口） */
+  async getRelatedMvs(songId: string): Promise<MvItem[]> {
+    const c = client();
+    const id = atoi(songId);
+    if (!id) throw new Error("qq related mv requires numeric song_id");
+    const resp = (await qqSong.getRelatedMv(c, id)) as {
+      list?: { vid?: string; mv_name?: string; name?: string; singers?: { name?: string }[]; picurl?: string; duration?: number; playcnt?: number }[];
+    };
+    return (resp?.list ?? [])
+      .filter((m) => m.vid)
+      .map((m) => ({
+        source: "qq",
+        id: String(m.vid),
+        name: stripEm(String(m.mv_name ?? m.name ?? "")).trim(),
+        artist: (m.singers ?? []).map((s) => s.name ?? "").join("、"),
+        cover: normalizeQQCover(m.picurl ?? ""),
+        duration: Math.floor((m.duration ?? 0) / 1000),
+        play_count: m.playcnt ?? 0,
+      }));
   },
 };
 

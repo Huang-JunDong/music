@@ -60,7 +60,22 @@ export function downloadLrcUrl(song: Song): string {
 export function coverProxyUrl(url: string, source?: string): string {
   if (!url) return "";
   if (url.startsWith("/api/")) return url; // 已是本站地址（本地音乐封面等）
-  return `/api/cover_proxy?url=${encodeURIComponent(url)}${source ? `&source=${source}` : ""}`;
+  let target = url;
+  /* 网易 CDN 原图（歌手头像/banner 等）常达 8-10MB，超过 cover_proxy 的 8MB 上限导致 502；
+     统一追加 ?param=480y480 让 CDN 返回缩略图（列表/卡片场景足够清晰）。
+     已带缩略参数（param/thumbnail/imageView）的 URL 不重复追加 */
+  if (safeHost(url).endsWith("music.126.net") && !/[?&](param|thumbnail|imageView)=/i.test(url)) {
+    target = `${url}${url.includes("?") ? "&" : "?"}param=480y480`;
+  }
+  return `/api/cover_proxy?url=${encodeURIComponent(target)}${source ? `&source=${source}` : ""}`;
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
 }
 
 export function coverUrl(song: Song): string {

@@ -18,6 +18,7 @@ const playlistCache = createTtlCache<Record<string, unknown>>(300_000, 60);
  * playlist 元信息来自 query（name/cover/creator/track_count/description/link）；
  * 广场/搜索入口仅带 id+source，元信息缺失时并行 parsePlaylist 回填（失败不影响曲目）。
  * link 缺省用源原始链接规则；import_collection 对齐 Go importCollectionFromQuery。
+ * P1 C4：?all=1&page=&limit= → 增量分页（网易 playlist_track_all，大歌单不落全量）→ { songs, has_more }
  */
 export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
 
@@ -29,6 +30,21 @@ async function getHandler(req: NextRequest) {
     return NextResponse.json({ error: "Missing params" }, { status: 400 });
   }
   const provider = getProvider(source);
+
+  /* P1 C4：大歌单增量分页（playlist_track_all，网易专属） */
+  if (params.get("all") === "1") {
+    if (!provider?.getAllPlaylistTracks) {
+      return NextResponse.json({ error: "增量分页仅支持网易云音乐" }, { status: 400 });
+    }
+    const page = Math.max(parseInt(params.get("page") ?? "1", 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "200", 10) || 200, 50), 1000);
+    try {
+      const r = await provider.getAllPlaylistTracks(id, page, limit);
+      return NextResponse.json({ songs: r.songs as Song[], has_more: r.has_more, page });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+    }
+  }
   if (!provider?.getPlaylistSongs) {
     return NextResponse.json({ error: "该源不支持查看歌单详情" }, { status: 400 });
   }
@@ -92,6 +108,14 @@ async function getHandler(req: NextRequest) {
       const result: Record<string, unknown> = { playlist, songs };
       if (importCollection) result.import_collection = importCollection;
       if (error) result.error = error;
+      /* P1 B4：歌单动态数徽标（playlist_detail_dynamic，网易专属；失败静默不阻塞详情） */
+      if (!error && provider?.getPlaylistDynamic) {
+        try {
+          result.dynamic = await provider.getPlaylistDynamic(id);
+        } catch {
+          /* ignore */
+        }
+      }
       return result;
     },
     (p) => !p.error,

@@ -13,7 +13,7 @@ import { ncmGlobals } from "@/lib/netease/global-state";
 import { mergeStoredCookie } from "@/lib/netease";
 import { getCookie, createSourceSessionStore, runWithSourceSession } from "@/lib/cookies";
 import { browserSourceCookies, requestIsHttps, srcSessionSetCookie } from "@/lib/source-session";
-import { enableGeneralUnblock, enableProxy, proxyUrl } from "@/lib/env";
+import { enableGeneralUnblock, enableProxy, proxyUrl, neteaseUpstreamProxy } from "@/lib/env";
 import { md5hex } from "@/lib/crypto";
 import { logger } from "@/lib/netease/logger";
 import { matchID } from "@/lib/netease/unblock";
@@ -173,6 +173,14 @@ async function handleNetease(req: NextRequest, ctx: { params: Promise<{ path: st
     throw err;
   }
   Object.assign(query, fields);
+
+  // 审核整改 A-04（SSRF 防护，标准 2.4）：剥离用户可控的 proxy/realIP ——
+  // 出站代理仅允许服务端环境变量 MUSIC_DL_NETEASE_PROXY 白名单配置；
+  // realIP 由下方 requestFn 按客户端 IP / 随机中国 IP 注入，不接受请求参数指定。
+  delete query.proxy;
+  delete query.realIP;
+  const upstreamProxy = neteaseUpstreamProxy();
+  if (upstreamProxy) query.proxy = upstreamProxy;
 
   // cookie：显式 cookie 参数 > SQLite 存储 > 请求头
   const hasExplicitCookie = query.cookie !== undefined;

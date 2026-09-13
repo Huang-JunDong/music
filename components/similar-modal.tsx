@@ -7,9 +7,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "motion/react";
-import { AudioLines, ListMusic, Play } from "lucide-react";
+import { AudioLines, ListMusic, Play, UserRound } from "lucide-react";
 import { Modal } from "@/components/modal";
-import { apiSimilarSongs, apiRelatedPlaylists } from "@/lib/client/api";
+import { apiSimilarSongs, apiRelatedPlaylists, apiSimilarUsers } from "@/lib/client/api";
 import { usePlayer } from "@/lib/client/store";
 import { coverProxyUrl } from "@/lib/play-url";
 import { fmtTimeClient } from "@/lib/client/ui";
@@ -18,6 +18,8 @@ import type { Playlist, Song } from "@/lib/types";
 export function SimilarModal({ song, open, onClose }: { song: Song | null; open: boolean; onClose: () => void }) {
   const [songs, setSongs] = useState<Song[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  /* P1 C4：听过此歌的用户（simi_user，网易专属；失败/空静默隐藏） */
+  const [users, setUsers] = useState<{ id: string; nickname: string; avatar?: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const play = usePlayer((s) => s.play);
   const [playing, setPlaying] = useState<string | null>(null);
@@ -30,14 +32,14 @@ export function SimilarModal({ song, open, onClose }: { song: Song | null; open:
     setLoading(true);
     setSongs([]);
     setPlaylists([]);
-    Promise.all([apiSimilarSongs(song), apiRelatedPlaylists(song)])
-      .then(([sr, pr]) => {
+    setUsers([]);
+    /* 审核整改 R2-F19：allSettled 化（原 Promise.all 任一网络级 reject 连坐清空全部结果） */
+    Promise.allSettled([apiSimilarSongs(song), apiRelatedPlaylists(song), apiSimilarUsers(song)])
+      .then(([sr, pr, ur]) => {
         if (!alive) return;
-        setSongs(sr.songs ?? []);
-        setPlaylists(pr.playlists ?? []);
-      })
-      .catch(() => {
-        /* 静默空态 */
+        setSongs(sr.status === "fulfilled" ? sr.value.songs ?? [] : []);
+        setPlaylists(pr.status === "fulfilled" ? pr.value.playlists ?? [] : []);
+        setUsers(ur.status === "fulfilled" ? ur.value.users ?? [] : []);
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -159,6 +161,34 @@ export function SimilarModal({ song, open, onClose }: { song: Song | null; open:
                         <span className="tip-sub">{p.track_count} 首</span>
                       </span>
                     </span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* P1 C4：听过此歌的用户（simi_user，网易专属） */}
+          {users.length > 0 && (
+            <section aria-label="听过此歌的用户">
+              <h3 className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-zinc-300">
+                <UserRound className="h-4 w-4 text-cyan-300/80" aria-hidden="true" /> 听过此歌的用户
+              </h3>
+              <div className="-mx-1 flex gap-2.5 overflow-x-auto px-1 pb-1">
+                {users.slice(0, 12).map((u) => (
+                  <Link
+                    key={u.id}
+                    href={`/user/${u.id}?source=netease`}
+                    onClick={onClose}
+                    className="group flex w-[72px] shrink-0 flex-col items-center gap-1.5"
+                    aria-label={`查看用户 ${u.nickname} 的主页`}
+                  >
+                    <span className="block aspect-square w-full overflow-hidden rounded-full bg-zinc-800 ring-1 ring-white/[0.06] transition-all group-hover:ring-cyan-400/40">
+                      {u.avatar ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img src={coverProxyUrl(u.avatar, "netease")} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                      ) : null}
+                    </span>
+                    <span className="block w-full truncate text-center text-[11px] text-zinc-400 group-hover:text-zinc-200">{u.nickname}</span>
                   </Link>
                 ))}
               </div>

@@ -27,6 +27,31 @@ export async function GET(req: NextRequest) {
   const session = createSourceSessionStore(browserSourceCookies(req), true);
   const secure = requestIsHttps(req);
   return runWithSourceSession(session, async () => {
+    /* P1 A2：owner+tab 模式 = 他人主页歌单（单源；user_playlist_create/collect） */
+    const ownerUid = (req.nextUrl.searchParams.get("owner") ?? "").trim();
+    if (ownerUid) {
+      const source = (req.nextUrl.searchParams.get("source") ?? "").trim();
+      const tab = req.nextUrl.searchParams.get("tab") === "collected" ? "collected" : "created";
+      const page = Math.max(parseInt(req.nextUrl.searchParams.get("page") ?? "1", 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(req.nextUrl.searchParams.get("limit") ?? "50", 10) || 50, 1), 100);
+      /* 审核整改 R2-#9：网易 uid 数字校验（防 NaN 上送） */
+      if (!/^\d+$/.test(ownerUid)) return NextResponse.json({ error: "owner 必须为数字 uid" }, { status: 400 });
+      if (!source) return NextResponse.json({ error: "缺少 source 参数" }, { status: 400 });
+      const provider = getProvider(source);
+      /* 审核整改 R2-#6：能力缺失返回 400（原返回空数组，与"该用户无歌单"混同） */
+      const fn = tab === "collected" ? provider?.getUserCollectedPlaylists : provider?.getUserCreatedPlaylists;
+      if (!fn) return NextResponse.json({ error: "该源不支持他人主页歌单" }, { status: 400 });
+      try {
+        const playlists = await fn(ownerUid, page, limit);
+        return NextResponse.json({ source, tab, playlists });
+      } catch (err) {
+        return NextResponse.json(
+          { error: err instanceof Error ? err.message : String(err) },
+          { status: 502 },
+        );
+      }
+    }
+
     const sources = filterAvailableSources(
       sourcesFromQuery(req.nextUrl.searchParams),
       USER_PLAYLIST_SOURCE_NAMES,

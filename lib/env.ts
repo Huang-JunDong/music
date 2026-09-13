@@ -81,3 +81,12 @@ export function sodaQrUseCaptureSignature(): boolean {
 export function proxyInsecure(): boolean {
   return process.env.MUSIC_DL_PROXY_INSECURE === "1";
 }
+
+/**
+ * MUSIC_DL_NETEASE_PROXY — 网易上游出站代理 URL（服务端白名单配置，审核整改 A-04）。
+ * 用户请求中的 proxy/realIP 参数已被透传路由剥离（SSRF 防护：防任意访客将携带
+ * MUSIC_U 凭证的出站流量引至自有代理/内网地址），仅此环境变量可启用代理。
+ */
+export function neteaseUpstreamProxy(): string {
+  return (process.env.MUSIC_DL_NETEASE_PROXY ?? "").trim();
+}

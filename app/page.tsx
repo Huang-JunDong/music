@@ -7,10 +7,12 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
-import { Search, Link2, X, Loader2, Sparkles, Music4, ListMusic, Disc3, Filter, ListPlus, ExternalLink, RefreshCw, Clock, Trash2 } from "lucide-react";
+import { Search, Link2, X, Loader2, Sparkles, Music4, ListMusic, Disc3, Filter, ListPlus, ExternalLink, RefreshCw, Clock, Trash2, Play } from "lucide-react";
 import { toast } from "sonner";
 import type { Song, Playlist } from "@/lib/types";
-import { apiSearch, apiImportCollection, apiSearchSuggest, type SearchResponse } from "@/lib/client/api";
+import { apiSearch, apiImportCollection, apiSearchSuggest, apiSearchMatch, type SearchResponse } from "@/lib/client/api";
+import { usePlayer } from "@/lib/client/store";
+import type { SearchMatchCard } from "@/lib/types";
 import { HotSearchSection, ArtistResults } from "@/components/search-enhance";
 import { SongList } from "@/components/song-list";
 import { PlaylistGrid } from "@/components/playlist-grid";
@@ -97,12 +99,21 @@ function SearchPageInner() {
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [suggestIndex, setSuggestIndex] = useState(-1);
   const suggestSeqRef = useRef(0);
+  /* P1 C5：输入框即时结果（search_multimatch 命中歌曲，下拉区可点播） */
+  const [instantSongs, setInstantSongs] = useState<Song[]>([]);
+  const instantSeqRef = useRef(0);
+  /* 审核整改 R2-F13：即时结果计数 ref——联想回调若读 state（渲染快照）为过期闭包值 */
+  const instantCountRef = useRef(0);
+  const playInstant = usePlayer((s) => s.play);
+
   useEffect(() => {
     const q = input.trim();
     if (!q || /^https?:\/\//i.test(q) || q.length < 1) {
       setSuggestions([]);
       setSuggestOpen(false);
       setSuggestIndex(-1);
+      setInstantSongs([]);
+      instantCountRef.current = 0;
       return;
     }
     const timer = setTimeout(() => {
@@ -112,16 +123,32 @@ function SearchPageInner() {
           if (seq !== suggestSeqRef.current) return;
           const list = (r.suggestions ?? []).filter((k) => k !== q).slice(0, 8);
           setSuggestions(list);
-          setSuggestOpen(list.length > 0);
+          setSuggestOpen(list.length > 0 || instantCountRef.current > 0);
           setSuggestIndex(-1);
         })
         .catch(() => {
           if (seq !== suggestSeqRef.current) return;
           setSuggestions([]);
-          setSuggestOpen(false);
+          setSuggestOpen(instantCountRef.current > 0);
+        });
+      /* 即时结果独立拉取（不阻塞联想词） */
+      const iseq = ++instantSeqRef.current;
+      apiSearchMatch("netease", q, "match")
+        .then((r) => {
+          if (iseq !== instantSeqRef.current) return;
+          const list = r.error ? [] : r.songs?.slice(0, 3) ?? [];
+          instantCountRef.current = list.length;
+          setInstantSongs(list);
+        })
+        .catch(() => {
+          if (iseq === instantSeqRef.current) {
+            instantCountRef.current = 0;
+            setInstantSongs([]);
+          }
         });
     }, 250);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input]);
 
   /** 联想键盘导航：↑↓ 移动、Enter 选中、Esc 关闭（技能可访问性要求） */
@@ -365,14 +392,39 @@ function SearchPageInner() {
           </motion.p>
         )}
 
-        {/* ---------- 搜索联想下拉 ---------- */}
-        {suggestOpen && suggestions.length > 0 && (
+        {/* ---------- 搜索联想下拉（P1 C5：顶部即时结果歌曲 + 联想词） ---------- */}
+        {suggestOpen && (suggestions.length > 0 || instantSongs.length > 0) && (
           <ul
             id="search-suggest-list"
             role="listbox"
-            aria-label="搜索联想"
+            aria-label="搜索联想与即时结果"
             className="glass absolute left-0 right-0 top-[calc(100%+6px)] z-30 overflow-hidden rounded-2xl border border-white/[0.1] py-1.5 shadow-2xl shadow-black/50"
           >
+            {instantSongs.length > 0 && (
+              <li aria-hidden="false" className="px-4 pb-1 pt-1.5 text-[11.5px] font-semibold tracking-widest text-fuchsia-300/70">
+                即时结果
+              </li>
+            )}
+            {instantSongs.map((s) => (
+              <li key={`instant-${s.id}`} role="option" aria-selected={false}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    playInstant(s, instantSongs);
+                    setSuggestOpen(false);
+                  }}
+                  className="flex min-h-[42px] w-full items-center gap-2.5 px-4 text-left text-[13.5px] text-zinc-300 transition-colors hover:bg-white/[0.07] hover:text-white"
+                >
+                  <Play className="h-3.5 w-3.5 shrink-0 text-fuchsia-300/80" aria-hidden="true" />
+                  <span className="truncate">{s.name}</span>
+                  <span className="ml-1 shrink-0 truncate text-[11px] text-zinc-500">{s.artist}</span>
+                </button>
+              </li>
+            ))}
+            {instantSongs.length > 0 && suggestions.length > 0 && (
+              <li aria-hidden="true" className="my-1 border-t border-white/[.07]" />
+            )}
             {suggestions.map((kw, i) => (
               <li key={kw} role="option" aria-selected={i === suggestIndex}>
                 <button
@@ -435,7 +487,7 @@ function SearchPageInner() {
           >
             <Filter className="h-3.5 w-3.5" aria-hidden="true" />
             音源
-            <span className="rounded-full bg-violet-500/25 px-1.5 text-[10.5px] font-bold text-violet-200">{sources.length}</span>
+            <span className="rounded-full bg-violet-500/25 px-1.5 text-[11.5px] font-bold text-violet-200">{sources.length}</span>
           </button>
         </div>
 
@@ -516,6 +568,7 @@ function SearchPageInner() {
             {/* 单曲结果（审核整改 A-28：songs 结构校验，异常响应体防白屏） */}
             {result.type === "song" && Array.isArray(result.songs) && result.songs.length > 0 && !result.error && (
               <>
+                <BestMatchCard q={resultQ} />
                 <ArtistResults q={resultQ} />
                 <SectionTitle count={result.songs.length}>单曲结果</SectionTitle>
                 <SongList
@@ -615,6 +668,93 @@ function SearchPageInner() {
         )}
       </div>
     </div>
+  );
+}
+
+/** P1 C5：最优匹配直达卡（网易 search_multimatch / QQ do_search_v2·smartbox；歌曲/歌手/专辑/歌单直达） */
+function BestMatchCard({ q }: { q: string }) {
+  const [hit, setHit] = useState<{ card: SearchMatchCard; source: "netease" | "qq" } | null>(null);
+  /* 审核整改 R2-F2：selector 订阅（原整库订阅在 currentTime 高频更新时该卡持续重渲染） */
+  const play = usePlayer((s) => s.play);
+
+  useEffect(() => {
+    let alive = true;
+    setHit(null);
+    if (!q || q.startsWith("http")) return;
+    /* 网易 multimatch 优先；QQ 走综合搜索聚合（do_search_v2），再回退 smartbox 即时结果 */
+    (async () => {
+      const attempts: { source: "netease" | "qq"; mode: "match" | "general" }[] = [
+        { source: "netease", mode: "match" },
+        { source: "qq", mode: "general" },
+        { source: "qq", mode: "match" },
+      ];
+      for (const { source, mode } of attempts) {
+        try {
+          const r = await apiSearchMatch(source, q, mode);
+          if (!alive) return;
+          if (!r.error && r.card) {
+            setHit({ card: r.card, source });
+            return;
+          }
+        } catch {
+          /* try next */
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [q]);
+
+  if (!hit) return null;
+  const { card, source } = hit;
+
+  const typeLabel = { song: "单曲", artist: "歌手", album: "专辑", playlist: "歌单" }[card.type];
+  const href =
+    card.type === "artist"
+      ? `/artist/${card.id}?source=${source}`
+      : card.type === "album"
+        ? `/album?id=${card.id}&source=${source}`
+        : card.type === "playlist"
+          ? `/playlist?id=${card.id}&source=${source}`
+          : "";
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="glass mb-5 flex items-center gap-4 rounded-3xl border border-white/[.07] p-3.5"
+      aria-label="最优匹配"
+    >
+      {card.cover ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={`/api/cover_proxy?url=${encodeURIComponent(card.cover)}&source=${source}`} alt="" loading="lazy" className="h-16 w-16 shrink-0 rounded-2xl object-cover ring-1 ring-white/[.08]" />
+      ) : (
+        <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white/[0.05] text-xl">🎯</span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-[11.5px] font-semibold tracking-widest text-fuchsia-300/80">最优匹配 · {typeLabel} · {source === "qq" ? "QQ音乐" : "网易云"}</p>
+        <p className="mt-1 truncate text-[15px] font-bold text-zinc-100">{card.name}</p>
+        {card.artist && <p className="mt-0.5 truncate text-[12px] text-zinc-500">{card.artist}</p>}
+      </div>
+      {card.type === "song" ? (
+        <button
+          onClick={() => play({ source, id: card.id, name: card.name, artist: card.artist ?? "", album: "", duration: 0, size: 0, bitrate: 128, cover: card.cover ?? "", link: "" })}
+          className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 text-[12.5px] font-semibold text-white"
+          aria-label={`播放 ${card.name}`}
+        >
+          ▶ 立即播放
+        </button>
+      ) : (
+        <Link
+          href={href}
+          className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 text-[12.5px] font-semibold text-white"
+        >
+          进入{typeLabel} →
+        </Link>
+      )}
+    </motion.section>
   );
 }
 

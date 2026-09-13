@@ -87,6 +87,14 @@ async function getHandler(req: NextRequest) {
       );
       if (importCollection) result.import_collection = importCollection;
       if (error) result.error = error;
+      /* P1 B4：专辑动态数徽标（album_detail_dynamic，网易专属；失败静默不阻塞详情） */
+      if (!error && provider?.getAlbumDynamic) {
+        try {
+          result.dynamic = await provider.getAlbumDynamic(id);
+        } catch {
+          /* ignore */
+        }
+      }
       return result;
     },
     (p) => !p.error,

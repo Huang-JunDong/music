@@ -4,16 +4,18 @@
  * 歌单 / 专辑详情共享视图（/playlist 与 /album 页复用）
  * 头部大卡（封面/名称/创建者/简介/曲目数）+ 全部播放 + 导入到我的歌单 + SongList
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "motion/react";
-import { ArrowLeft, Play, ListPlus, Loader2, Disc3, ExternalLink, CalendarDays } from "lucide-react";
+import { ArrowLeft, Play, ListPlus, Loader2, Disc3, ExternalLink, CalendarDays, MessageSquareHeart } from "lucide-react";
+import { SongCommentsModal } from "@/components/song-comments";
 import { toast } from "sonner";
 import { SongList } from "@/components/song-list";
 import {
   apiPlaylistDetail,
   apiAlbumDetail,
   apiImportCollection,
+  apiPlaylistTracksPage,
   type PlaylistDetailResponse,
 } from "@/lib/client/api";
 import { usePlayer } from "@/lib/client/store";
@@ -28,7 +30,14 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
   const [data, setData] = useState<PlaylistDetailResponse | null>(null);
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
-  const { play } = usePlayer();
+  /* P1 C3：多资源评论区开关（comment_playlist/comment_album） */
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  /* P1 C4：大歌单增量分页（playlist_track_all，网易专属） */
+  const [loadingMore, setLoadingMore] = useState(false);
+  /* 审核整改 R2-F14：已拉页码记录（detail 变化时重置） */
+  const loadedPageRef = useRef(1);
+  /* 审核整改 R2-F16：selector 订阅（原整库订阅在 currentTime 高频更新时详情页全量重渲染） */
+  const play = usePlayer((s) => s.play);
 
   useEffect(() => {
     if (!id || !source) {
@@ -38,6 +47,7 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
     let alive = true;
     setData(null);
     setError("");
+    loadedPageRef.current = 1;
     const req = kind === "album" ? apiAlbumDetail(source, id) : apiPlaylistDetail(source, id);
     req
       .then((r) => {
@@ -55,6 +65,32 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
 
   const pl = data?.playlist ?? null;
   const songs = data?.songs ?? [];
+  const dynamic = data?.dynamic;
+
+  /* P1 C4：曲目数超出已加载量（网易大歌单）→ 增量分页续载（playlist_track_all） */
+  const canLoadMore = kind === "playlist" && source === "netease" && !!pl && pl.track_count > songs.length && songs.length > 0;
+  const loadMoreTracks = async () => {
+    if (!data || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      /* 审核整改 R2-F14：独立页码记录（原按 songs.length/200 推算，去重后长度非整页倍数会重复请求已拉页） */
+      const nextPage = loadedPageRef.current + 1;
+      const r = await apiPlaylistTracksPage("netease", id, nextPage, 200);
+      if (r.error) throw new Error(r.error);
+      const incoming = r.songs ?? [];
+      const seen = new Set(songs.map((s) => s.id));
+      const merged = [...songs, ...incoming.filter((s) => !seen.has(s.id))];
+      setData({ ...data, songs: merged });
+      loadedPageRef.current = nextPage;
+      if (!r.has_more) {
+        toast.success(`已加载全部 ${merged.length} 首`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "加载更多失败");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const onImport = async () => {
     if (!pl) return;
@@ -155,6 +191,10 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
                   {pl.creator && <span>{kind === "album" ? "歌手" : "创建者"}：{pl.creator}</span>}
                   <span className="tabular-nums">{songs.length || pl.track_count || 0} 首</span>
                   {pl.play_count > 0 && <span className="tabular-nums">{formatCount(pl.play_count)} 次播放</span>}
+                  {/* P1 B4：动态数徽标（playlist_detail_dynamic / album_detail_dynamic，网易） */}
+                  {dynamic?.subscribed_count ? <span className="tabular-nums">{formatCount(dynamic.subscribed_count)} 收藏</span> : null}
+                  {dynamic?.comment_count ? <span className="tabular-nums">{formatCount(dynamic.comment_count)} 评论</span> : null}
+                  {dynamic?.share_count ? <span className="tabular-nums">{formatCount(dynamic.share_count)} 分享</span> : null}
                 </p>
                 {kind === "album" && releaseInfo && (
                   <p className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-500">
@@ -188,6 +228,18 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
                     )}
                     导入到我的歌单
                   </button>
+                  {/* P1 C3：多资源评论区（comment_playlist / comment_album，经 V2 通道） */}
+                  {pl.source && (
+                    <button
+                      onClick={() => setCommentsOpen(true)}
+                      aria-label="查看评论"
+                      className="flex h-11 items-center gap-2 rounded-xl border border-white/[0.12] bg-white/[0.04] px-5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.08] active:scale-95"
+                    >
+                      <MessageSquareHeart className="h-4 w-4" aria-hidden="true" />
+                      评论
+                      {dynamic?.comment_count ? <span className="text-[11px] tabular-nums text-zinc-500">{formatCount(dynamic.comment_count)}</span> : null}
+                    </button>
+                  )}
                   {pl.link && (
                     <a
                       href={pl.link}
@@ -211,6 +263,16 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
               <h2 className="text-[15px] font-bold text-zinc-100">{kind === "album" ? "专辑曲目" : "歌单曲目"}</h2>
               <span className="text-xs tabular-nums text-zinc-500">{songs.length} 首</span>
             </div>
+            {/* P1 C4：增量加载更多曲目（大歌单） */}
+            {canLoadMore && (
+              <button
+                onClick={() => void loadMoreTracks()}
+                disabled={loadingMore}
+                className="mb-3 flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-2xl border border-white/[.08] text-[13px] text-zinc-400 transition-colors hover:border-violet-400/40 hover:text-zinc-100 disabled:opacity-60"
+              >
+                {loadingMore ? "加载中…" : `加载更多曲目（已 ${songs.length}/${pl?.track_count ?? "?"} 首）`}
+              </button>
+            )}
             <SongList
               songs={songs}
               emptyHint="没有获取到曲目，可能需要登录或该源暂时受限"
@@ -219,6 +281,18 @@ export function CollectionDetail({ kind }: { kind: "playlist" | "album" }) {
           </div>
         </>
       )}
+
+      {/* P1 C3：多资源评论区（歌单/专辑，网易 comment_playlist/comment_album） */}
+      <SongCommentsModal
+        song={
+          pl
+            ? { source: pl.source, id: pl.id, name: pl.name, artist: "", album: "", duration: 0, size: 0, bitrate: 128, cover: pl.cover, link: pl.link }
+            : null
+        }
+        open={commentsOpen}
+        onClose={() => setCommentsOpen(false)}
+        target={kind}
+      />
     </div>
   );
 }

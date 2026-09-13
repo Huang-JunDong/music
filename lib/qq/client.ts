@@ -297,9 +297,9 @@ export class QQClient {
       fetchInit.body = new URLSearchParams(options.data).toString();
       if (!headers["Content-Type"]) headers["Content-Type"] = "application/x-www-form-urlencoded";
     }
-    if (options.timeoutMs) {
-      fetchInit.signal = AbortSignal.timeout(options.timeoutMs);
-    }
+    // 审核整改 A-03：raw 链路默认 15s 超时（原仅显式传 timeoutMs 才有超时）；
+    // 长轮询等特殊场景由调用方显式传更大 timeoutMs 覆盖。
+    fetchInit.signal = AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs);
 
     await this.limiter.acquire();
     let res: Response;

@@ -8,10 +8,11 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "motion/react";
-import { MonitorPlay, Play, RefreshCw, AlertTriangle, Film, ChevronDown } from "lucide-react";
+import { MonitorPlay, Play, RefreshCw, AlertTriangle, Film, ChevronDown, Bookmark } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { MvPlayModal, formatPlayCount } from "@/components/mv-play-modal";
-import { apiMvList } from "@/lib/client/api";
+import { apiMvList, apiSubbedMvs, apiSubMv, apiSimilarMvs } from "@/lib/client/api";
+import { toast } from "sonner";
 import { coverProxyUrl, sourceMeta } from "@/lib/play-url";
 import { formatDuration, type MvItem, type MvListTab } from "@/lib/types";
 
@@ -48,6 +49,8 @@ function MvInner() {
   const tab: MvListTab = subTabs.some((t) => t.key === rawTab) ? rawTab : subTabs[0].key;
   const rawArea = params.get("area") ?? "";
   const area = (AREAS as readonly string[]).includes(rawArea) ? rawArea : "全部";
+  /* P1 C7：收藏 MV 视图（mv_sublist） */
+  const subbed = source === "netease" && params.get("subbed") === "1";
 
   const [playing, setPlaying] = useState<MvItem | null>(null);
 
@@ -125,37 +128,56 @@ function MvInner() {
                   </button>
                 );
               })}
+              {/* P1 C7：我的收藏 MV（mv_sublist，网易专属） */}
+              <button
+                role="tab"
+                aria-selected={subbed}
+                onClick={() => router.replace(subbed ? `/mv?source=netease&tab=${tab}` : `/mv?source=netease&tab=${tab}&subbed=1`, { scroll: false })}
+                className={`flex min-h-[38px] items-center gap-1 rounded-full border px-3 text-xs font-medium transition-all active:scale-95 ${
+                  subbed
+                    ? "border-rose-400/40 bg-rose-500/20 text-rose-100 ring-1 ring-rose-400/30"
+                    : "border-white/[0.1] bg-white/[0.02] text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Bookmark className="h-3 w-3" aria-hidden="true" /> 我的收藏
+              </button>
             </div>
           )}
         </div>
-        {/* 地区 chips */}
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {AREAS.map((a) => {
-            const active = a === area;
-            return (
-              <button
-                key={a}
-                onClick={() => replaceQuery({ area: a })}
-                aria-pressed={active}
-                className={`flex min-h-[32px] items-center rounded-full border px-2.5 text-[11px] font-medium transition-all active:scale-95 ${
-                  active
-                    ? "border-fuchsia-400/40 bg-fuchsia-500/15 text-fuchsia-100"
-                    : "border-white/[0.08] bg-white/[0.02] text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {a}
-              </button>
-            );
-          })}
-        </div>
+        {/* 地区 chips（收藏视图隐藏） */}
+        {!subbed && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {AREAS.map((a) => {
+              const active = a === area;
+              return (
+                <button
+                  key={a}
+                  onClick={() => replaceQuery({ area: a })}
+                  aria-pressed={active}
+                  className={`flex min-h-[32px] items-center rounded-full border px-2.5 text-[11px] font-medium transition-all active:scale-95 ${
+                    active
+                      ? "border-fuchsia-400/40 bg-fuchsia-500/15 text-fuchsia-100"
+                      : "border-white/[0.08] bg-white/[0.02] text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {a}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="mt-4">
-        <MvGrid source={source} tab={tab} area={area} onPlay={setPlaying} />
+        {subbed ? (
+          <SubbedMvGrid onPlay={setPlaying} />
+        ) : (
+          <MvGrid source={source} tab={tab} area={area} onPlay={setPlaying} />
+        )}
       </div>
 
-      {/* 播放弹窗 */}
-      <MvPlayModal mv={playing} onClose={() => setPlaying(null)} />
+      {/* 播放弹窗（P1 C7：onPlaySimilar 支持相似 MV 一键切换） */}
+      <MvPlayModal mv={playing} onClose={() => setPlaying(null)} onPlaySimilar={setPlaying} />
     </div>
   );
 }
@@ -291,6 +313,109 @@ function MvGrid({
             {loadingMore ? "加载中…" : "加载更多"}
           </button>
         </div>
+      )}
+    </>
+  );
+}
+
+/* ================= P1 C7：我的收藏 MV（mv_sublist 分页） ================= */
+
+function SubbedMvGrid({ onPlay }: { onPlay: (mv: MvItem) => void }) {
+  const [mvs, setMvs] = useState<MvItem[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [needLogin, setNeedLogin] = useState(false);
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError("");
+    apiSubbedMvs(1, 30)
+      .then((r) => {
+        if (!alive) return;
+        if (r.error) {
+          if (/登录/.test(r.error)) setNeedLogin(true);
+          else setError(r.error);
+          setMvs([]);
+          return;
+        }
+        setMvs(r.mvs ?? []);
+        setHasMore(!!r.has_more);
+        setPage(1);
+      })
+      .catch((e) => alive && setError(e instanceof Error ? e.message : "加载失败"))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (needLogin) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <Bookmark className="h-8 w-8 text-zinc-600" aria-hidden="true" />
+        <p className="text-sm text-zinc-500">收藏列表为个人数据，请先登录网易云账号</p>
+        <a href="/accounts" className="flex min-h-[44px] items-center rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-5 text-[13px] font-semibold text-white">
+          去登录
+        </a>
+      </div>
+    );
+  }
+
+  if (error && !loading && !mvs.length) {
+    return <p className="py-12 text-center text-[13px] text-red-300" role="alert">{error}</p>;
+  }
+
+  if (loading && !mvs.length) {
+    return (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" aria-busy="true">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="shimmer aspect-video rounded-2xl" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!mvs.length) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <Bookmark className="h-8 w-8 text-zinc-600" aria-hidden="true" />
+        <p className="text-sm text-zinc-500">还没有收藏 MV（播放时点击收藏按钮）</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {mvs.map((mv, i) => (
+          <MvCard key={`${mv.id}-${i}`} mv={mv} index={i} onPlay={onPlay} />
+        ))}
+      </div>
+      {hasMore && !loading && (
+        <button
+          onClick={() => {
+            const next = page + 1;
+            setLoading(true);
+            apiSubbedMvs(next, 30)
+              .then((r) => {
+                if (r.error) throw new Error(r.error);
+                setMvs((prev) => [...prev, ...(r.mvs ?? [])]);
+                setHasMore(!!r.has_more);
+                setPage(next);
+              })
+              .catch(() => {
+                /* 审核整改 R2-F6：加载更多失败给出反馈（原静默，用户无失败感知） */
+                toast.error("收藏 MV 加载失败，请稍后重试");
+              })
+              .finally(() => setLoading(false));
+          }}
+          className="mt-4 flex min-h-[44px] w-full items-center justify-center rounded-2xl border border-white/[.08] text-[13px] text-zinc-400 transition-colors hover:border-rose-400/40 hover:text-zinc-100"
+        >
+          加载更多
+        </button>
       )}
     </>
   );

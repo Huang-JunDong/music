@@ -34,6 +34,8 @@ const searchCache = createTtlCache<Record<string, unknown>>(90_000, 50);
 /**
  * GET /api/search?q=&type=song|playlist|album&exact_artist=&sources=(多值/逗号分隔)
  * 并发 allSettled 聚合；q 以 http 开头走链接解析（DetectSource→parse→parsePlaylist→parseAlbum）。
+ * P1 C5：mode=match → 多类型匹配（网易 search_multimatch / QQ smartbox 即时结果，最优匹配直达卡）
+ *        mode=general → 综合搜索（QQ do_search_v2 聚合）
  */
 export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
 
@@ -43,6 +45,37 @@ async function getHandler(req: NextRequest) {
   if (!keyword) {
     return NextResponse.json({ error: "Missing params" }, { status: 400 });
   }
+
+  /* P1 C5：最优匹配 / 综合搜索模式 */
+  const mode = (params.get("mode") ?? "").trim();
+  if (mode === "match" || mode === "general") {
+    const source = params.get("source") === "qq" ? "qq" : "netease";
+    const page = Math.max(parseInt(params.get("page") ?? "1", 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "20", 10) || 20, 1), 50);
+    const provider = getProvider(source);
+    /* match 模式：无 multimatch 能力的源（QQ）回退 quickSearch（smartbox 即时结果），
+       避免 400 噪音——前端 BestMatchCard 会依次尝试 netease:match → qq:general → qq:match */
+    const fn =
+      mode === "match"
+        ? provider?.getSearchMultimatch ?? provider?.quickSearch
+        : provider?.quickSearch ?? provider?.generalSearch;
+    if (!fn) {
+      return NextResponse.json({ error: mode === "match" ? "该源不支持多类型匹配" : "该源不支持综合搜索" }, { status: 400 });
+    }
+    /* 审核整改 R2-#4：general 模式能力校验（网易无 quickSearch，原非空断言调用抛 TypeError） */
+    try {
+      const result =
+        mode === "match" && provider?.getSearchMultimatch
+          ? await provider.getSearchMultimatch(keyword)
+          : source === "qq" && provider?.generalSearch && mode === "general"
+            ? await provider.generalSearch(keyword, page, limit)
+            : await provider!.quickSearch!(keyword);
+      return NextResponse.json({ source, mode, ...result });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+    }
+  }
+
   let searchType = params.get("type") ?? "song";
   if (!["song", "playlist", "album"].includes(searchType)) searchType = "song";
   const exactArtist = (params.get("exact_artist") ?? "").trim();

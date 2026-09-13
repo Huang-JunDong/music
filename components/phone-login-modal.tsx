@@ -5,11 +5,12 @@
  * 60s 验证码倒计时；成功后回调刷新账号状态
  */
 import { useEffect, useRef, useState } from "react";
-import { Smartphone, Loader2, KeyRound, MessageSquareCode } from "lucide-react";
+import { Smartphone, Loader2, KeyRound, MessageSquareCode, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
-import { apiPhoneLoginSendCode, apiPhoneLogin } from "@/lib/client/api";
+import { apiPhoneLoginSendCode, apiPhoneLogin, apiCountries } from "@/lib/client/api";
 import { sourceMeta } from "@/lib/play-url";
+import type { CountryCode } from "@/lib/types";
 
 export function PhoneLoginModal({
   source,
@@ -26,6 +27,22 @@ export function PhoneLoginModal({
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [sending, setSending] = useState(false);
+  /* P1 C6：国际区号（网易 countries_code_list；QQ 源不支持区号，隐藏选择器） */
+  const [countryCode, setCountryCode] = useState("86");
+  const [countries, setCountries] = useState<CountryCode[]>([]);
+
+  useEffect(() => {
+    if (source !== "netease") return;
+    let alive = true;
+    apiCountries()
+      .then((r) => {
+        if (alive && r.countries?.length) setCountries(r.countries);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [source]);
   const [countdown, setCountdown] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -58,7 +75,7 @@ export function PhoneLoginModal({
     }
     setSending(true);
     try {
-      await apiPhoneLoginSendCode(source, p);
+      await apiPhoneLoginSendCode(source, p, source === "netease" ? countryCode : undefined);
       toast.success("验证码已发送");
       startCountdown();
     } catch (e) {
@@ -85,7 +102,7 @@ export function PhoneLoginModal({
     }
     setSubmitting(true);
     try {
-      await apiPhoneLogin(source, p, mode, mode === "code" ? code.trim() : password);
+      await apiPhoneLogin(source, p, mode, mode === "code" ? code.trim() : password, source === "netease" ? countryCode : undefined);
       toast.success(`${sourceMeta(source).label}登录成功`);
       onSuccess();
       onClose();
@@ -130,6 +147,26 @@ export function PhoneLoginModal({
         </label>
         <div className="input-shell flex items-center gap-2 rounded-xl px-3">
           <Smartphone className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+          {source === "netease" && (
+            <div className="relative shrink-0">
+              <select
+                value={countryCode}
+                onChange={(e) => setCountryCode(e.target.value)}
+                aria-label="国际区号"
+                className="min-h-[46px] cursor-pointer appearance-none bg-transparent pr-5 text-[13px] font-medium text-zinc-200 focus:outline-none"
+              >
+                {(countries.length
+                  ? countries
+                  : [{ code: "86", name: "China", zh_name: "中国大陆" }]
+                ).map((c) => (
+                  <option key={c.code} value={c.code} className="bg-zinc-900">
+                    +{c.code} {c.zh_name ?? c.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-0.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" aria-hidden="true" />
+            </div>
+          )}
           <input
             id="phone-login-phone"
             value={phone}

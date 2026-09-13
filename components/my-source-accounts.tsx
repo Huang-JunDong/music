@@ -8,12 +8,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { QrCode, LogOut, Loader2, Smartphone } from "lucide-react";
+import { QrCode, LogOut, Loader2, Smartphone, RefreshCw, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
 import { QrImage } from "@/components/qr-image";
 import { PhoneLoginModal } from "@/components/phone-login-modal";
-import {
+import { apiAccountRefresh, apiAccountCheckExpired,
   apiCreateQRLogin,
   apiCheckQRLogin,
   apiQRLoginStatus,
@@ -28,6 +28,94 @@ const MINE_LOGIN_SOURCES = ["netease", "qq", "qq_wx", "kugou", "bilibili"];
 const PHONE_LOGIN_SOURCES = new Set(["netease", "qq"]);
 
 type MineQRState = { source: string; session: QRLoginSession; status: "waiting" | "scanned" | "expired" };
+
+/** P1 C6：匿名账号兜底（网易 register_anonimous；明确同意后触发，凭证写入本浏览器会话） */
+function AnonymousLoginSection({ onCreated }: { onCreated: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [agreed, setAgreed] = useState(false);
+  return (
+    <div className="mt-3 rounded-2xl border border-white/[.07] bg-white/[0.02] p-3.5">
+      <p className="text-[12.5px] leading-relaxed text-zinc-400">
+        没有账号？可创建一个<b className="text-zinc-200">网易云匿名游客账号</b>——解锁每日推荐、听歌报告等需登录能力（不可收藏/评论，仅本浏览器有效）。
+      </p>
+      <label className="mt-2.5 flex cursor-pointer items-center gap-2 text-[12px] text-zinc-500">
+        <input
+          type="checkbox"
+          checked={agreed}
+          onChange={(e) => setAgreed(e.target.checked)}
+          className="h-4 w-4 rounded border-white/[.15] bg-transparent accent-violet-500"
+        />
+        我已了解匿名账号的限制，同意自动创建
+      </label>
+      <button
+        onClick={async () => {
+          if (busy || !agreed) return;
+          setBusy(true);
+          try {
+            const { apiRegisterAnonymous } = await import("@/lib/client/api");
+            const r = await apiRegisterAnonymous();
+            if (r.error) throw new Error(r.error);
+            toast.success("匿名账号已创建，需登录能力已解锁");
+            onCreated();
+          } catch (e) {
+            toast.error(e instanceof Error ? e.message : "匿名注册失败");
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={!agreed || busy}
+        className="mt-2.5 flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-xl border border-violet-400/30 bg-violet-500/10 text-[12.5px] font-medium text-violet-200 transition-colors hover:bg-violet-500/15 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <UserRound className="h-4 w-4" aria-hidden="true" />}
+        {busy ? "创建中…" : "创建匿名游客账号"}
+      </button>
+    </div>
+  );
+}
+
+/** P1 C6：凭证续期按钮（QQ 侧带过期探测徽标，过期时高亮提示） */
+function AccountRefreshButton({ source }: { source: string }) {
+  const [busy, setBusy] = useState(false);
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    if (source !== "qq") return;
+    let alive = true;
+    apiAccountCheckExpired(source)
+      .then((r) => alive && setExpired(!!r.expired))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [source]);
+
+  return (
+    <button
+      onClick={async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          await apiAccountRefresh(source);
+          setExpired(false);
+          toast.success("凭证已续期");
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "续期失败");
+        } finally {
+          setBusy(false);
+        }
+      }}
+      disabled={busy}
+      title={expired ? "凭证疑似过期，建议续期" : "续期源站登录凭证"}
+      className={`flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95 disabled:opacity-50 ${
+        expired
+          ? "border-amber-400/40 bg-amber-400/10 text-amber-200 hover:bg-amber-400/15"
+          : "border-white/[.1] bg-white/[.04] text-zinc-300 hover:border-violet-400/30 hover:text-white"
+      }`}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />}
+      {expired ? "已过期·续期" : "续期"}
+    </button>
+  );
+}
 
 export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
   const [statuses, setStatuses] = useState<Record<string, boolean> | null>(null);
@@ -163,13 +251,19 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
                 {statuses === null ? "检测中…" : loggedIn ? "已登录" : "未登录"}
               </span>
               {loggedIn ? (
-                <button
-                  onClick={() => void logout(s)}
-                  disabled={loggingOut === s}
-                  className="ml-auto flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-white/[.1] bg-white/[.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-red-400/30 hover:text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95 disabled:opacity-50"
-                >
-                  {loggingOut === s ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <LogOut className="h-3.5 w-3.5" aria-hidden="true" />} 退出
-                </button>
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                  {/* P1 C6：凭证续期（网易 login_refresh · QQ refreshCredential）+ QQ 过期探测徽标 */}
+                  {(s === "netease" || s === "qq") && (
+                    <AccountRefreshButton source={s} />
+                  )}
+                  <button
+                    onClick={() => void logout(s)}
+                    disabled={loggingOut === s}
+                    className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-white/[.1] bg-white/[.04] px-3.5 text-[12px] font-medium text-zinc-300 transition-colors hover:border-red-400/30 hover:text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 active:scale-95 disabled:opacity-50"
+                  >
+                    {loggingOut === s ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <LogOut className="h-3.5 w-3.5" aria-hidden="true" />} 退出
+                  </button>
+                </span>
               ) : (
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   {PHONE_LOGIN_SOURCES.has(s) && (
@@ -196,6 +290,16 @@ export function MySourceAccounts({ onChanged }: { onChanged?: () => void }) {
           );
         })}
       </div>
+
+      {/* P1 C6：无任何凭证时的匿名账号引导（register_anonimous，提升需登录接口可用性；需用户明确同意） */}
+      {statuses !== null && loggedInCount === 0 && (
+        <AnonymousLoginSection
+          onCreated={() => {
+            loadStatuses();
+            onChanged?.();
+          }}
+        />
+      )}
 
       {phoneSource && (
         <PhoneLoginModal

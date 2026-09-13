@@ -1,25 +1,40 @@
 "use client";
 
 /**
- * 歌曲评论弹窗：热门/最新排序 tab + 分页加载 + 发表/回复（@对象）
- * 网易 comment_music · QQ GetHotCommentList/GetNewCommentList（写入需对应源登录）
+ * 评论弹窗：热门/最新/推荐（QQ）排序 + 分页 + 发表/回复 + 点赞/抱抱/楼层展开
+ * 网易 comment_new（自动回退 comment_music 等旧版）· QQ GetHot/New/RecommendCommentList
+ * P1 C3：target 可选——多资源评论区（album/playlist/mv/video/dj），该模式下隐藏发表框。
  */
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { motion } from "motion/react";
-import { MessageSquareHeart, RefreshCw, ThumbsUp, CornerDownRight, Send, Loader2, Trash2, UserRound } from "lucide-react";
+import { MessageSquareHeart, RefreshCw, ThumbsUp, CornerDownRight, Send, Loader2, Trash2, UserRound, HeartHandshake, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
-import { apiSongComments, apiAddSongComment, apiDeleteSongComment } from "@/lib/client/api";
+import { apiCommentsV2, apiAddSongComment, apiDeleteSongComment, apiLikeComment, apiHugComment, apiCommentFloor } from "@/lib/client/api";
 import { coverProxyUrl } from "@/lib/play-url";
-import type { CommentItem, Song } from "@/lib/types";
+import type { CommentItem, Song, CommentTarget } from "@/lib/types";
 
-type SortKey = "hot" | "new";
+type SortKey = "hot" | "new" | "recommended";
 
-export function SongCommentsModal({ song, open, onClose }: { song: Song | null; open: boolean; onClose: () => void }) {
+export function SongCommentsModal({
+  song,
+  open,
+  onClose,
+  target,
+}: {
+  song: Song | null;
+  open: boolean;
+  onClose: () => void;
+  /** 多资源评论目标（默认 song；传入后按 type 走对应资源评论区，隐藏发表框） */
+  target?: CommentTarget["type"];
+}) {
   const [sort, setSort] = useState<SortKey>("hot");
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  /* P1 C3：已点赞评论 id 集（本地乐观标记） */
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -33,17 +48,20 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
   const seqRef = useRef(0);
 
   const songKey = song ? `${song.source}:${song.id}` : "";
+  const targetType = target ?? "song";
+  const isMultiResource = targetType !== "song";
 
-  /* 加载第一页（开弹窗/切排序/重试） */
+  /* 加载第一页（开弹窗/切排序/重试；P1 C3 走 V2 多资源通道，QQ recommended 为推荐评论） */
   useEffect(() => {
     if (!open || !song) return;
     let alive = true;
     const seq = ++seqRef.current;
     setLoading(true);
     setError("");
-    apiSongComments(song, sort, 1)
+    apiCommentsV2(song, targetType, sort, 1)
       .then((r) => {
         if (!alive || seq !== seqRef.current) return;
+        setLikedIds(new Set());
         if (r.error) throw new Error(r.error);
         setComments(r.comments ?? []);
         setTotal(r.total ?? 0);
@@ -60,13 +78,96 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, songKey, sort, retryKey]);
+  }, [open, songKey, sort, retryKey, targetType]);
+
+  /* P1 C3：点赞评论（comment_like 网易专属；QQ 源静默不支持） */
+  const toggleLike = async (c: CommentItem) => {
+    if (!song || song.source !== "netease") {
+      toast.error("评论点赞仅支持网易云音乐");
+      return;
+    }
+    const willLike = !likedIds.has(c.id);
+    /* 乐观更新 */
+    setLikedIds((prev) => {
+      const next = new Set(prev);
+      if (willLike) next.add(c.id);
+      else next.delete(c.id);
+      return next;
+    });
+    setComments((prev) => prev.map((x) => (x.id === c.id ? { ...x, liked_count: Math.max(0, x.liked_count + (willLike ? 1 : -1)) } : x)));
+    try {
+      /* 审核整改 R2-F1：传当前资源类型（原硬编码 "song"，MV/歌单等评论区点赞错位失败） */
+      await apiLikeComment(song, targetType, c.id, willLike);
+    } catch (e) {
+      /* 回滚 */
+      setLikedIds((prev) => {
+        const next = new Set(prev);
+        if (willLike) next.delete(c.id);
+        else next.add(c.id);
+        return next;
+      });
+      setComments((prev) => prev.map((x) => (x.id === c.id ? { ...x, liked_count: Math.max(0, x.liked_count + (willLike ? -1 : 1)) } : x)));
+      toast.error(e instanceof Error ? e.message : "点赞失败");
+    }
+  };
+
+  /* P1 C3：抱抱评论（hug_comment 网易专属，需评论作者 id） */
+  const hug = async (c: CommentItem) => {
+    if (!song) return;
+    if (song.source !== "netease") {
+      toast.error("抱抱仅支持网易云音乐");
+      return;
+    }
+    if (!c.user_id) {
+      toast.error("该评论暂不支持抱抱");
+      return;
+    }
+    try {
+      await apiHugComment(song, targetType, c.id, c.user_id);
+      toast.success(`已给 ${c.user} 一个抱抱`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "抱抱失败");
+    }
+  };
+
+  /* P1 C3：展开楼层回复（comment_floor，网易专属） */
+  const [floorOf, setFloorOf] = useState<string | null>(null);
+  const [floorItems, setFloorItems] = useState<CommentItem[]>([]);
+  const [floorLoading, setFloorLoading] = useState(false);
+  /* 审核整改 R2-F3：楼层键控（快速切换不同评论的回复时，旧响应不覆盖新宿主的楼层） */
+  const floorSeq = useRef(0);
+  const loadFloor = async (c: CommentItem) => {
+    if (!song) return;
+    if (floorOf === c.id) {
+      setFloorOf(null);
+      return;
+    }
+    if (song.source !== "netease") {
+      toast.error("楼层回复仅支持网易云音乐");
+      return;
+    }
+    setFloorOf(c.id);
+    const seq = ++floorSeq.current;
+    setFloorLoading(true);
+    try {
+      const r = await apiCommentFloor(song, targetType, c.id, 1, 20);
+      if (seq !== floorSeq.current) return;
+      if (r.error) throw new Error(r.error);
+      setFloorItems(r.comments ?? []);
+    } catch (e) {
+      if (seq !== floorSeq.current) return;
+      toast.error(e instanceof Error ? e.message : "加载回复失败");
+      setFloorOf(null);
+    } finally {
+      if (seq === floorSeq.current) setFloorLoading(false);
+    }
+  };
 
   const loadMore = () => {
     if (!song || loadingMore || !hasMore) return;
     const next = page + 1;
     setLoadingMore(true);
-    apiSongComments(song, sort, next)
+    apiCommentsV2(song, targetType, sort, next)
       .then((r) => {
         if (r.error) throw new Error(r.error);
         setComments((prev) => [...prev, ...(r.comments ?? [])]);
@@ -124,25 +225,27 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
           {[
             { key: "hot" as SortKey, label: "热门" },
             { key: "new" as SortKey, label: "最新" },
+            /* P1 C3：QQ 推荐评论（GetRecommendComments） */
+            ...(song?.source === "qq" ? [{ key: "recommended" as SortKey, label: "推荐" }] : []),
           ].map((t) => (
             <button
               key={t.key}
               role="tab"
               aria-selected={sort === t.key}
               onClick={() => setSort(t.key)}
-              className={`flex min-h-[32px] items-center rounded-md px-3 text-[12.5px] font-medium transition-colors ${
+              className={`flex min-h-[36px] items-center rounded-md px-3 text-[12.5px] font-medium transition-colors ${
                 sort === t.key ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
               }`}
             >
               {t.label}
-              {sort === t.key && total > 0 && <span className="ml-1 text-[10px] tabular-nums text-zinc-500">{total}</span>}
+              {sort === t.key && total > 0 && <span className="ml-1 text-[11px] tabular-nums text-zinc-500">{total}</span>}
             </button>
           ))}
         </div>
         <button
           onClick={() => setRetryKey((k) => k + 1)}
           aria-label="刷新评论"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+          className="flex h-11 w-11 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
         >
           <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -188,7 +291,29 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
                   transition={{ delay: Math.min(i * 0.02, 0.3), duration: 0.22 }}
                   className="flex gap-2.5 rounded-xl p-2 transition-colors hover:bg-white/[0.03]"
                 >
-                  {c.avatar ? (
+                  {/* P1 A2：头像可跳用户主页（网易 userId 存在时；QQ 无公开用户页参数则纯展示） */}
+                  {c.user_id && song?.source === "netease" ? (
+                    <Link
+                      href={`/user/${c.user_id}?source=netease`}
+                      onClick={onClose}
+                      aria-label={`查看 ${c.user} 的主页`}
+                      className="shrink-0"
+                    >
+                      {c.avatar ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={coverProxyUrl(c.avatar, "netease")}
+                          alt=""
+                          loading="lazy"
+                          className="h-8 w-8 rounded-full object-cover ring-1 ring-transparent transition-all hover:ring-violet-400/50"
+                        />
+                      ) : (
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.06] transition-colors hover:bg-white/[0.1]">
+                          <UserRound className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                        </span>
+                      )}
+                    </Link>
+                  ) : c.avatar ? (
                     /* eslint-disable-next-line @next/next/no-img-element */
                     <img
                       src={coverProxyUrl(c.avatar, song?.source ?? "netease")}
@@ -204,8 +329,8 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="truncate text-[12.5px] font-semibold text-zinc-300">{c.user}</span>
-                      {c.location && <span className="shrink-0 text-[10.5px] text-zinc-600">{c.location}</span>}
-                      {c.time && <span className="ml-auto shrink-0 text-[10.5px] text-zinc-600">{c.time}</span>}
+                      {c.location && <span className="shrink-0 text-[11.5px] text-zinc-600">{c.location}</span>}
+                      {c.time && <span className="ml-auto shrink-0 text-[11.5px] text-zinc-600">{c.time}</span>}
                     </div>
                     {c.reply_to && (
                       <p className="mt-1 truncate rounded-md bg-white/[0.04] px-2 py-1 text-[11.5px] text-zinc-500">
@@ -217,19 +342,45 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
                       {c.content}
                     </p>
                     <div className="mt-1 flex items-center gap-3">
-                      <span className="flex items-center gap-1 text-[11px] tabular-nums text-zinc-500">
+                      {/* P1 C3：点赞评论（comment_like，网易专属；本地乐观计数） */}
+                      <button
+                        onClick={() => toggleLike(c)}
+                        aria-label={`点赞 ${c.user} 的评论`}
+                        className="flex min-h-[32px] items-center gap-1 text-[11px] tabular-nums text-zinc-500 transition-colors hover:text-rose-300"
+                      >
                         <ThumbsUp className="h-3 w-3" aria-hidden="true" />
                         {c.liked_count}
-                      </span>
+                      </button>
                       <button
                         onClick={() => {
                           setReplyTo(c);
                           setDraft(`@${c.user} `);
                         }}
-                        className="text-[11px] text-zinc-500 transition-colors hover:text-violet-300"
+                        className="min-h-[32px] text-[11px] text-zinc-500 transition-colors hover:text-violet-300"
                       >
                         回复
                       </button>
+                      {/* P1 C3：抱抱（hug_comment，网易专属） */}
+                      {song?.source === "netease" && c.user_id && (
+                        <button
+                          onClick={() => void hug(c)}
+                          aria-label={`抱抱 ${c.user} 的评论`}
+                          className="flex items-center gap-0.5 text-[11px] text-zinc-500 transition-colors hover:text-pink-300"
+                        >
+                          <HeartHandshake className="h-3 w-3" aria-hidden="true" /> 抱抱
+                        </button>
+                      )}
+                      {/* P1 C3：展开楼层回复（comment_floor，网易专属） */}
+                      {song?.source === "netease" && (c.reply_count ?? 0) > 0 && (
+                        <button
+                          onClick={() => void loadFloor(c)}
+                          aria-expanded={floorOf === c.id}
+                          className="flex items-center gap-0.5 text-[11px] text-zinc-500 transition-colors hover:text-cyan-300"
+                        >
+                          {floorOf === c.id ? "收起回复" : `展开 ${c.reply_count} 条回复`}
+                          <ChevronDown className={`h-3 w-3 transition-transform ${floorOf === c.id ? "rotate-180" : ""}`} aria-hidden="true" />
+                        </button>
+                      )}
                       <button
                         onClick={() => void remove(c)}
                         disabled={deletingId !== null}
@@ -244,6 +395,30 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
                         )}
                       </button>
                     </div>
+                    {/* P1 C3：楼层回复子列表（comment_floor） */}
+                    {floorOf === c.id && (
+                      <div className="mt-2 ml-10 rounded-xl bg-white/[0.02] p-2.5" aria-label="楼层回复">
+                        {floorLoading ? (
+                          <p className="flex items-center gap-1.5 py-1.5 text-[11.5px] text-zinc-500">
+                            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> 加载回复中…
+                          </p>
+                        ) : floorItems.length ? (
+                          <ul className="space-y-1.5">
+                            {floorItems.map((f, fi) => (
+                              <li key={`${f.id}-${fi}`} className="flex items-start gap-2">
+                                <CornerDownRight className="mt-0.5 h-3 w-3 shrink-0 text-zinc-600" aria-hidden="true" />
+                                <span className="min-w-0 flex-1">
+                                  <b className="text-[11.5px] font-semibold text-zinc-300">{f.user}</b>
+                                  <span className="ml-1.5 text-[11.5px] leading-relaxed text-zinc-400">{f.content}</span>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="py-1.5 text-[11.5px] text-zinc-500">暂无更多回复</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </motion.li>
               ))}
@@ -269,7 +444,8 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
         )}
       </div>
 
-      {/* 发表框 */}
+      {/* 发表框（多资源评论区只读，隐藏发表） */}
+      {!isMultiResource && (
       <div className="mt-3 border-t border-white/[0.07] pt-3">
         {replyTo && (
           <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-violet-500/10 px-2.5 py-1.5 text-[11.5px] text-violet-200/90">
@@ -309,8 +485,9 @@ export function SongCommentsModal({ song, open, onClose }: { song: Song | null; 
             {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
           </button>
         </div>
-        <p className="mt-1 text-right text-[10.5px] tabular-nums text-zinc-600">{draft.length}/140</p>
+        <p className="mt-1 text-right text-[11.5px] tabular-nums text-zinc-600">{draft.length}/140</p>
       </div>
+      )}
     </Modal>
   );
 }

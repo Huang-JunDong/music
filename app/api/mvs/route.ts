@@ -16,11 +16,29 @@ const VALID_TABS = new Set<string>(["latest", "exclusive", "top", "all"]);
 /**
  * GET /api/mvs?source=&tab=latest|exclusive|top|all&area=&page=&limit= →
  *   { source, source_name, tab, area, mvs, has_more, error? }
+ * P1 C7：?related=1 + song 参数集 → { mvs }（QQ GetSongRelatedMv 歌曲相关 MV，播放页入口）
  */
 export const GET = (req: NextRequest) => withBrowserSourceSession(req, getHandler);
 
 async function getHandler(req: NextRequest) {
   const params = req.nextUrl.searchParams;
+
+  /* P1 C7：歌曲相关 MV（QQ 专属；播放页"歌曲 MV"入口） */
+  if (params.get("related") === "1") {
+    const { songFromParams } = await import("@/lib/registry");
+    const song = songFromParams(params);
+    if (!song.id || song.source !== "qq") {
+      return NextResponse.json({ error: "歌曲相关 MV 仅支持QQ音乐源" }, { status: 400 });
+    }
+    const provider = getProvider("qq");
+    if (!provider?.getRelatedMvs) return NextResponse.json({ mvs: [] });
+    try {
+      return NextResponse.json({ mvs: await provider.getRelatedMvs(song.extra?.song_id ?? song.id) });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+    }
+  }
+
   const sources = filterAvailableSources(sourcesFromQuery(params), ["netease", "qq"]);
   const source = sources[0] ?? "netease";
   const rawTab = (params.get("tab") ?? "latest").trim();

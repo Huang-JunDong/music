@@ -8,7 +8,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion, MotionConfig } from "motion/react";
 import {
-  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode, Trophy, MonitorPlay, Radio, Disc3, CalendarCheck, Rewind, Users,
+  Search, Compass, ListMusic, HardDrive, Settings, Music4, History, Clapperboard, LogIn, LogOut, X, Terminal, Music2, QrCode, Trophy, MonitorPlay, Radio, Disc3, CalendarCheck, Rewind, Users, CircleUserRound, ChartPie, Podcast, AudioWaveform, CloudUpload,
   type LucideIcon,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
@@ -34,10 +34,15 @@ const NAV: NavItem[] = [
   { href: "/explore", label: "歌单广场", icon: Compass, match: (p: string) => p.startsWith("/explore") || p.startsWith("/playlist") },
   { href: "/albums", label: "新碟架", icon: Disc3, match: (p: string) => p.startsWith("/albums") },
   { href: "/charts", label: "排行榜", icon: Trophy, match: (p: string) => p.startsWith("/charts") },
+  { href: "/podcast", label: "播客电台", icon: Podcast, match: (p: string) => p.startsWith("/podcast") },
+  { href: "/styles", label: "曲风探索", icon: AudioWaveform, match: (p: string) => p.startsWith("/styles") },
   { href: "/artists", label: "歌手库", icon: Users, match: (p: string) => p.startsWith("/artists") },
   { href: "/mv", label: "MV", icon: MonitorPlay, match: (p: string) => p.startsWith("/mv") },
   { href: "/fm", label: "私人FM", icon: Radio, match: (p: string) => p.startsWith("/fm") },
   { href: "/collections", label: "我的歌单", icon: ListMusic, match: (p: string) => p.startsWith("/collections") || p.startsWith("/collection") },
+  { href: "/profile", label: "个人主页", icon: CircleUserRound, match: (p: string) => p.startsWith("/profile") || p.startsWith("/user"), group: "我的" },
+  { href: "/report", label: "听歌报告", icon: ChartPie, match: (p: string) => p.startsWith("/report"), group: "我的" },
+  { href: "/cloud", label: "云盘音乐", icon: CloudUpload, match: (p: string) => p.startsWith("/cloud"), group: "我的" },
   { href: "/local", label: "本地音乐", icon: HardDrive, match: (p: string) => p.startsWith("/local") },
   { href: "/downloads", label: "下载记录", icon: History, match: (p: string) => p.startsWith("/downloads") },
   { href: "/checkin", label: "签到中心", icon: CalendarCheck, match: (p: string) => p.startsWith("/checkin") },
@@ -165,11 +170,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <MotionConfig reducedMotion="user">
       <div className="relative z-10 flex min-h-dvh">
-      {/* ---------- PC 侧边栏 ---------- */}
-      <aside className="sticky top-0 hidden h-dvh w-[248px] shrink-0 flex-col gap-6 border-r border-white/[0.07] bg-zinc-950/60 px-4 py-6 backdrop-blur-xl lg:flex">
-        <BrandMark />
-        <NavItems pillLayoutId="nav-pill-pc" />
-        <AuthCard auth={auth} doLogout={doLogout} />
+      {/* ---------- PC 侧边栏（导航超出一屏时中部区域独立滚动，品牌与登录卡固定） ---------- */}
+      <aside className="sticky top-0 hidden h-dvh w-[248px] shrink-0 flex-col border-r border-white/[0.07] bg-zinc-950/60 backdrop-blur-xl lg:flex">
+        <div className="px-4 pt-6">
+          <BrandMark />
+        </div>
+        <div className="mt-6 min-h-0 flex-1 overflow-y-auto px-4 pb-2">
+          <NavItems pillLayoutId="nav-pill-pc" />
+        </div>
+        <div className="shrink-0 px-4 pb-6 pt-4">
+          <AuthCard auth={auth} doLogout={doLogout} />
+        </div>
       </aside>
 
       {/* ---------- 主内容 ---------- */}

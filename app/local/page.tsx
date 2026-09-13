@@ -25,6 +25,7 @@ import {
   ChevronRight,
   Loader2,
   TriangleAlert,
+  DatabaseZap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modal";
@@ -35,6 +36,7 @@ import {
   apiDeleteLocalMusic,
   apiLocalDuplicates,
   apiSettings,
+  apiReindexLocalMusic,
   type LocalMusicResponse,
   type LocalTrack,
 } from "@/lib/client/api";
@@ -101,6 +103,8 @@ function LocalMusicInner() {
   const [deleting, setDeleting] = useState<LocalTrack | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
   const [uploading, setUploading] = useState(false);
+  /* 重建索引（P0 遗留入口补齐） */
+  const [reindexing, setReindexing] = useState(false);
   /** 审核整改 A-28：加载失败态（区别于空态） */
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dupOpen, setDupOpen] = useState(false);
@@ -330,6 +334,29 @@ function LocalMusicInner() {
               className="glass flex h-11 items-center gap-2 rounded-xl border border-white/[0.1] px-4 text-[13px] font-medium text-zinc-200 transition-colors hover:border-violet-400/30 disabled:opacity-50 active:scale-95"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" /> 刷新
+            </button>
+            {/* 重建索引（P0 遗留入口补齐：POST /api/local_music/reindex 全量重扫） */}
+            <button
+              onClick={async () => {
+                if (reindexing) return;
+                if (!window.confirm("重建索引将全量重扫下载目录，耗时与曲目数相关。继续？")) return;
+                setReindexing(true);
+                try {
+                  await apiReindexLocalMusic();
+                  toast.success("索引已重建");
+                  void loadPage(1, {});
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "重建失败");
+                } finally {
+                  setReindexing(false);
+                }
+              }}
+              disabled={reindexing}
+              aria-label="重建索引"
+              className="glass flex h-11 items-center gap-2 rounded-xl border border-white/[0.1] px-4 text-[13px] font-medium text-zinc-200 transition-colors hover:border-violet-400/30 disabled:opacity-50 active:scale-95"
+            >
+              {reindexing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <DatabaseZap className="h-4 w-4" aria-hidden="true" />}
+              {reindexing ? "重建中…" : "重建索引"}
             </button>
             <button
               onClick={() => fileRef.current?.click()}

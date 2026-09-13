@@ -5,14 +5,15 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import {
   X, Play, Pause, SkipBack, SkipForward, Repeat, Repeat1, Shuffle,
-  Download, Loader2, Music4, Gauge, ChevronDown, ChevronUp, MessageSquareHeart, AudioLines,
+  Download, Loader2, Music4, Gauge, ChevronDown, ChevronUp, MessageSquareHeart, AudioLines, BookOpenText, Sparkles, Film,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { usePlayer } from "@/lib/client/store";
 import { coverUrl, sourceMeta, switchSourceUrl, fmtSizeClient, isLocalSource } from "@/lib/client/ui";
 import { fmtTimeClient } from "@/lib/client/ui";
-import { apiInspect } from "@/lib/client/api";
+import { apiInspect, apiIntelligenceFm, apiRelatedMvs } from "@/lib/client/api";
+import type { MvItem } from "@/lib/types";
 import { RateMenu } from "./rate-menu";
 import { QualityMenu } from "./quality-menu";
 import { SwitchSourceMenu } from "./switch-source-menu";
@@ -20,6 +21,8 @@ import { VolumeMenu } from "./volume-menu";
 import { Spectrum } from "./spectrum";
 import { SongCommentsModal } from "@/components/song-comments";
 import { SimilarModal } from "@/components/similar-modal";
+import { SongWikiPanel } from "@/components/song-wiki-panel";
+import { MvPlayModal } from "@/components/mv-play-modal";
 import type { ClientLyricLine, ClientLyricWord } from "@/lib/lrc-client";
 
 /* ---------- 唱机动画常量（模块级引用稳定） ----------
@@ -402,6 +405,20 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
   const [commentsOpen, setCommentsOpen] = useState(false);
   /* 相似推荐弹窗（相似歌曲+包含此歌的歌单） */
   const [similarOpen, setSimilarOpen] = useState(false);
+  /* 歌曲百科弹窗（P1 C1：wiki + 创作人员 + 其他版本 + 版权替代） */
+  const [wikiOpen, setWikiOpen] = useState(false);
+  /* 心动模式生成中（P1 C4：playmode_intelligence_list 以当前歌为种子） */
+  const [intelligenceBusy, setIntelligenceBusy] = useState(false);
+  /* P1 C7：QQ 歌曲相关 MV（GetSongRelatedMv，弹窗播放） */
+  const [songMvs, setSongMvs] = useState<MvItem[]>([]);
+  const [playingMv, setPlayingMv] = useState<MvItem | null>(null);
+  const [mvsBusy, setMvsBusy] = useState(false);
+
+  /* 切歌重置相关 MV 缓存 */
+  useEffect(() => {
+    setSongMvs([]);
+    setPlayingMv(null);
+  }, [song.id, song.source]);
   const doSwitch = async (target?: string) => {
     const tid = toast.loading(target ? `正在从${sourceMeta(target).label}匹配…` : "正在跨源匹配…");
     setSwitching(true);
@@ -455,7 +472,7 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
       </div>
 
       <div
-        className={`relative z-10 grid min-h-0 flex-1 gap-3 overflow-hidden px-5 pb-7 lg:grid-cols-[minmax(0,440px)_minmax(0,520px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-x-16 lg:justify-center lg:px-16 lg:pb-12 ${
+        className={`relative z-10 grid min-h-0 flex-1 gap-3 overflow-hidden px-5 pb-[max(1.75rem,env(safe-area-inset-bottom))] lg:grid-cols-[minmax(0,440px)_minmax(0,520px)] lg:grid-rows-[minmax(0,1fr)_auto] lg:gap-x-16 lg:justify-center lg:px-16 lg:pb-12 ${
           mobileView === "disc"
             ? "grid-rows-[minmax(0,1fr)_0px_auto]"
             : "grid-rows-[0px_minmax(0,1fr)_auto]"
@@ -666,6 +683,68 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
                 评论
               </button>
               <button
+                onClick={() => setWikiOpen(true)}
+                aria-label="歌曲百科"
+                className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-violet-400/40 hover:text-violet-200 active:scale-95"
+              >
+                <BookOpenText className="h-3.5 w-3.5" />
+                百科
+              </button>
+              {/* P1 C7：QQ 歌曲相关 MV（GetSongRelatedMv，点击弹窗播放） */}
+              {song.source === "qq" && (
+                <button
+                  onClick={async () => {
+                    if (mvsBusy) return;
+                    if (songMvs.length) {
+                      setPlayingMv(songMvs[0]);
+                      return;
+                    }
+                    setMvsBusy(true);
+                    try {
+                      const r = await apiRelatedMvs(song);
+                      if (r.error || !r.mvs?.length) throw new Error(r.error || "该歌曲暂无相关 MV");
+                      setSongMvs(r.mvs);
+                      setPlayingMv(r.mvs[0]);
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "获取相关 MV 失败");
+                    } finally {
+                      setMvsBusy(false);
+                    }
+                  }}
+                  disabled={mvsBusy}
+                  aria-label="歌曲相关 MV"
+                  className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-violet-400/40 hover:text-violet-200 active:scale-95 disabled:opacity-60"
+                >
+                  <Film className={`h-3.5 w-3.5 ${mvsBusy ? "animate-pulse" : ""}`} aria-hidden="true" />
+                  {mvsBusy ? "获取中…" : songMvs.length ? `MV ×${songMvs.length}` : "歌曲MV"}
+                </button>
+              )}
+              {/* P1 C4：心动模式（网易 playmode_intelligence_list，以当前歌为种子生成智能队列） */}
+              {song.source === "netease" && (
+                <button
+                  onClick={async () => {
+                    if (intelligenceBusy) return;
+                    setIntelligenceBusy(true);
+                    try {
+                      const r = await apiIntelligenceFm(song);
+                      if (r.error || !r.songs?.length) throw new Error(r.error || "心动模式暂无推荐");
+                      usePlayer.setState({ queue: [song, ...r.songs.filter((s) => s.id !== song.id)], index: 0 });
+                      toast.success(`心动模式已生成（${r.songs.length + 1} 首）`);
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "心动模式生成失败");
+                    } finally {
+                      setIntelligenceBusy(false);
+                    }
+                  }}
+                  disabled={intelligenceBusy}
+                  aria-label="心动模式"
+                  className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-rose-400/40 hover:text-rose-200 active:scale-95 disabled:opacity-60"
+                >
+                  <Sparkles className={`h-3.5 w-3.5 ${intelligenceBusy ? "animate-pulse" : ""}`} aria-hidden="true" />
+                  {intelligenceBusy ? "生成中…" : "心动模式"}
+                </button>
+              )}
+              <button
                 onClick={() => setSimilarOpen(true)}
                 aria-label="相似推荐"
                 className="flex h-11 items-center gap-1.5 rounded-full border border-white/[0.1] px-4 text-xs font-medium text-zinc-300 transition-all hover:border-violet-400/40 hover:text-violet-200 active:scale-95"
@@ -676,6 +755,9 @@ export function NowPlaying({ onClose, onDownload }: { onClose: () => void; onDow
             </div>
             <SongCommentsModal song={song} open={commentsOpen} onClose={() => setCommentsOpen(false)} />
             <SimilarModal song={song} open={similarOpen} onClose={() => setSimilarOpen(false)} />
+            <SongWikiPanel song={song} open={wikiOpen} onClose={() => setWikiOpen(false)} />
+            {/* P1 C7：歌曲相关 MV 播放（QQ GetSongRelatedMv） */}
+            <MvPlayModal mv={playingMv} onClose={() => setPlayingMv(null)} onPlaySimilar={setPlayingMv} />
           </div>
 
         {/* 歌词：移动端歌词视图占满中段（内部滚动无滚动条、文字居中）；桌面右列通栏左对齐。

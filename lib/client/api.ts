@@ -4,7 +4,7 @@
  * 前端 API 客户端 — 对接 /api/*（与 Go 版行为一一对应的路由）
  * 含 401 统一分流（跳登录页）与鉴权 API。
  */
-import type { Song, Playlist, PlaylistCategory, QRLoginSession, QRLoginResult, SongQuality, Toplist, MvItem, MvListTab, Artist, HotSearch, CommentItem, CheckinStatus, Banner } from "../types";
+import type { Song, Playlist, PlaylistCategory, QRLoginSession, QRLoginResult, SongQuality, Toplist, MvItem, MvListTab, Artist, HotSearch, CommentItem, CheckinStatus, Banner, UserProfile, UserVipInfo, UserFollowsResult, PlayRecordItem, ListenStats, ReportSection, HistoryDailyRecommend, DjCategory, DjRadio, DjProgram, StyleTag, StyleDetail, CloudSong, HighqualityTag, DiscoverBlock, SongWiki, SongCreator, FollowedArtist, SearchMultimatch, CountryCode, CommentTarget } from "../types";
 import { songParams } from "../play-url";
 
 export class ApiError extends Error {
@@ -203,6 +203,8 @@ export interface PlaylistDetailResponse {
   playlist: Playlist;
   songs: Song[];
   import_collection?: ImportCollection;
+  /** P1 B4：歌单/专辑动态数徽标（网易 playlist_detail_dynamic / album_detail_dynamic） */
+  dynamic?: { play_count?: number; subscribed_count?: number; comment_count?: number; share_count?: number; on_sale?: boolean };
   error?: string;
 }
 
@@ -445,21 +447,24 @@ export function apiFmTrash(source: string, songId: string): Promise<{ ok: boolea
 /* ---------------- 歌曲评论 ---------------- */
 
 export interface CommentsResponse {
-  comments: CommentItem[];
+  /* 审核整改 R2-#10：error 分支路由不返回列表，标注可选与实际一致 */
+  comments?: CommentItem[];
   total: number;
   has_more: boolean;
   error?: string;
 }
 
-/** songParams(song) 生成歌曲参数集（与下载/换源接口一致） */
-export function apiSongComments(
+/** P1 C3：多资源评论（comment_new；sort=recommended 为 QQ 推荐评论） */
+export function apiCommentsV2(
   song: Song,
-  sort: "hot" | "new",
+  type: CommentTarget["type"],
+  sort: "hot" | "new" | "recommended",
   page: number,
   limit = 20,
 ): Promise<CommentsResponse> {
   const p = new URLSearchParams(songParams(song));
-  p.set("sort", sort);
+  if (type !== "song") p.set("type", type);
+  if (sort !== "hot") p.set("sort", sort);
   p.set("page", String(page));
   p.set("limit", String(limit));
   return getJSON(`/api/comments?${p.toString()}`);
@@ -522,6 +527,353 @@ export function apiDoCheckin(kind: CheckinKind): Promise<{ ok: boolean }> {
   return requestJSON(`/api/checkin`, "POST", { kind });
 }
 
+/* ---------------- P1 Wave A：用户资产与报告 ---------------- */
+
+export function apiUserProfile(source: string, uid?: string): Promise<{ profile?: UserProfile; error?: string }> {
+  const p = new URLSearchParams({ source });
+  if (uid) p.set("uid", uid);
+  return getJSON(`/api/user_profile?${p.toString()}`);
+}
+
+export function apiVipInfo(source: string): Promise<{ vip?: UserVipInfo; error?: string }> {
+  return getJSON(`/api/vip_info?source=${encodeURIComponent(source)}`);
+}
+
+export function apiUserFollows(
+  source: string,
+  uid: string,
+  kind: "follows" | "followeds" | "mutual",
+  page = 1,
+  limit = 30,
+): Promise<{ users?: UserFollowsResult["users"]; has_more?: boolean; error?: string }> {
+  const p = new URLSearchParams({ source, uid, kind, page: String(page), limit: String(limit) });
+  return getJSON(`/api/user_follows?${p.toString()}`);
+}
+
+/** 他人主页歌单（tab: created 创建 / collected 收集） */
+export function apiOwnerPlaylists(
+  source: string,
+  uid: string,
+  tab: "created" | "collected",
+  page = 1,
+  limit = 50,
+): Promise<{ playlists?: Playlist[]; error?: string }> {
+  const p = new URLSearchParams({ source, owner: uid, tab, page: String(page), limit: String(limit) });
+  return getJSON(`/api/user_playlists?${p.toString()}`);
+}
+
+export function apiReportSections(source: string): Promise<{ sections?: ReportSection[]; error?: string; need_login?: boolean }> {
+  return getJSON(`/api/report?source=${encodeURIComponent(source)}&section=annual`);
+}
+
+export function apiListenStats(source: string): Promise<{ stats?: ListenStats; error?: string; need_login?: boolean }> {
+  return getJSON(`/api/report?source=${encodeURIComponent(source)}&section=stats`);
+}
+
+export function apiPlayRecord(source: string, type: 0 | 1): Promise<{ items?: PlayRecordItem[]; error?: string; need_login?: boolean }> {
+  return getJSON(`/api/report?source=${encodeURIComponent(source)}&section=record&type=${type}`);
+}
+
+export function apiHistoryDailyRecommends(
+  source: string,
+  date?: string,
+): Promise<{ days?: HistoryDailyRecommend[]; error?: string; need_login?: boolean }> {
+  const p = new URLSearchParams({ source, section: "history" });
+  if (date) p.set("date", date);
+  return getJSON(`/api/report?${p.toString()}`);
+}
+
+/* ---------------- P1 Wave B：播客 / 曲风 / 云盘 / 发现二期 ---------------- */
+
+export function apiDjCategories(): Promise<{ categories?: DjCategory[]; error?: string }> {
+  return getJSON(`/api/podcast?categories=1`);
+}
+
+export function apiDjRadios(
+  kind: "recommend" | "hot" | "today",
+  category?: string,
+  page = 1,
+  limit = 30,
+): Promise<{ radios?: DjRadio[]; has_more?: boolean; error?: string }> {
+  const p = new URLSearchParams({ kind, page: String(page), limit: String(limit) });
+  if (category) p.set("category", category);
+  return getJSON(`/api/podcast?${p.toString()}`);
+}
+
+export function apiDjRadioDetail(
+  id: string,
+  programPage = 1,
+  programLimit = 30,
+): Promise<{ radio?: DjRadio; programs?: DjProgram[]; programs_has_more?: boolean; programs_error?: string; error?: string }> {
+  return getJSON(`/api/podcast_detail?id=${encodeURIComponent(id)}&program_page=${programPage}&program_limit=${programLimit}`);
+}
+
+/** P1 B1：单节目完整详情（dj_program_detail，完整描述） */
+export function apiDjProgramDetail(programId: string): Promise<{ program?: DjProgram; error?: string }> {
+  return getJSON(`/api/podcast_detail?program_id=${encodeURIComponent(programId)}`);
+}
+
+export function apiStyles(): Promise<{ tags?: StyleTag[]; top_tags?: StyleTag[]; preferences?: string[]; error?: string }> {
+  return getJSON(`/api/styles`);
+}
+
+export function apiStyleMeta(id: string): Promise<{ style?: StyleDetail; error?: string }> {
+  return getJSON(`/api/styles/detail?id=${encodeURIComponent(id)}&kind=meta`);
+}
+
+export interface StyleResourceResponse {
+  songs?: Song[];
+  albums?: Playlist[];
+  artists?: Artist[];
+  playlists?: Playlist[];
+  has_more?: boolean;
+  error?: string;
+}
+
+export function apiStyleResource(
+  id: string,
+  kind: "song" | "album" | "artist" | "playlist",
+  page = 1,
+  limit = 30,
+): Promise<StyleResourceResponse> {
+  return getJSON(`/api/styles/detail?id=${encodeURIComponent(id)}&kind=${kind}&page=${page}&limit=${limit}`);
+}
+
+/** P1 B3：云盘单条详情（user_cloud_detail：文件名/大小/添加时间） */
+export function apiCloudSongDetail(cloudId: string): Promise<{ song?: CloudSong; error?: string }> {
+  return getJSON(`/api/cloud?id=${encodeURIComponent(cloudId)}`);
+}
+
+export function apiCloudSongs(
+  page = 1,
+  limit = 50,
+): Promise<{ songs?: CloudSong[]; has_more?: boolean; size?: number; max_size?: number; error?: string; need_login?: boolean }> {
+  return getJSON(`/api/cloud?page=${page}&limit=${limit}`);
+}
+
+export function apiCloudMatch(cloudId: string, targetSongId: string): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/cloud`, "POST", { action: "match", id: cloudId, target: targetSongId });
+}
+
+export function apiCloudLyric(cloudId: string): Promise<{ lyric?: string; error?: string }> {
+  return requestJSON(`/api/cloud`, "POST", { action: "lyric", id: cloudId });
+}
+
+export function apiCloudDelete(cloudId: string): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/cloud`, "POST", { action: "delete", id: cloudId });
+}
+
+export function apiHighquality(
+  tag = "全部",
+  page = 1,
+  withTags = false,
+): Promise<{ playlists?: Playlist[]; has_more?: boolean; tags?: HighqualityTag[]; hot_tags?: { id: string; name: string; hot?: boolean }[]; error?: string }> {
+  const p = new URLSearchParams({ tag, page: String(page) });
+  if (withTags) p.set("with_tags", "1");
+  return getJSON(`/api/highquality?${p.toString()}`);
+}
+
+export function apiDiscoverBlocks(): Promise<{ blocks?: DiscoverBlock[]; error?: string }> {
+  return getJSON(`/api/discover?kind=blocks`);
+}
+
+export function apiPrivateContents(): Promise<{ banners?: Banner[]; error?: string }> {
+  return getJSON(`/api/discover?kind=privatecontents`);
+}
+
+export function apiRecommendedMvs(): Promise<{ mvs?: MvItem[]; error?: string }> {
+  return getJSON(`/api/discover?kind=recommended_mvs`);
+}
+
+export function apiDailyPlaylists(): Promise<{ playlists?: Playlist[]; need_login?: boolean; error?: string }> {
+  return getJSON(`/api/discover?kind=daily_playlists`);
+}
+
+export function apiMyLikedPlaylists(): Promise<{ playlists?: Playlist[]; error?: string }> {
+  return getJSON(`/api/discover?kind=my_liked`);
+}
+
+/** 专辑筛选列表（P1 B4：album_list / album_list_style） */
+export function apiAlbumList(
+  source: string,
+  area: string,
+  style = "",
+  page = 1,
+  limit = 30,
+): Promise<{ albums?: Playlist[]; has_more?: boolean; error?: string }> {
+  const p = new URLSearchParams({ source, kind: "list", area, page: String(page), limit: String(limit) });
+  if (style) p.set("style", style);
+  return getJSON(`/api/albums?${p.toString()}`);
+}
+
+/** 收藏/取消收藏歌单（P1 B4） */
+export function apiSubscribePlaylist(source: string, playlistId: string, sub: boolean): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/playlist/manage`, "POST", {
+    action: sub ? "subscribe" : "unsubscribe",
+    source,
+    playlist_id: playlistId,
+  });
+}
+
+/** 歌单排序（P1 C4：playlist_order_update，置顶 = 目标移至首位后接其余歌单 id） */
+export function apiUpdatePlaylistOrder(source: string, playlistIds: string[]): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/playlist/manage`, "POST", {
+    action: "order",
+    source,
+    playlist_ids: playlistIds,
+  });
+}
+
+/* ---------------- P1 Wave C：体验增强 ---------------- */
+
+/** C1 歌曲百科聚合（wiki + creators + meta + 红评数 + 版权替代 + QQ 标签/制作人/其他版本/收藏数） */
+export function apiSongWiki(song: Song): Promise<{ wiki?: SongWiki; error?: string }> {
+  const p = new URLSearchParams(songParams(song));
+  return getJSON(`/api/song_wiki?${p.toString()}`);
+}
+
+/** C2 歌手头部统计与长文简介（artist_detail/dynamic + QQ GetSingerDetail） */
+export function apiArtistWiki(source: string, id: string): Promise<{ desc?: string; follower_count?: number; error?: string }> {
+  return getJSON(`/api/artist?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}&kind=wiki`);
+}
+
+/** C2 关注/取关歌手（artist_sub，乐观更新由调用方负责） */
+export function apiFollowArtist(source: string, id: string, follow: boolean): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/artist`, "POST", { source, id, action: follow ? "follow" : "unfollow" });
+}
+
+/** C2 已关注歌手列表（artist_sublist · QQ GetFollowSingerList） */
+export function apiFollowedArtists(
+  source: string,
+  page = 1,
+  limit = 30,
+): Promise<{ artists?: FollowedArtist[]; has_more?: boolean; error?: string; need_login?: boolean }> {
+  return getJSON(`/api/followed_artists?source=${encodeURIComponent(source)}&page=${page}&limit=${limit}`);
+}
+
+/** C2 歌手视频（artist_video，网易专属） */
+export function apiArtistVideos(
+  source: string,
+  id: string,
+  page = 1,
+  limit = 20,
+): Promise<{ videos?: MvItem[]; has_more?: boolean; error?: string }> {
+  return getJSON(`/api/artist?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}&kind=videos&page=${page}&limit=${limit}`);
+}
+
+/** C3 楼层回复（comment_floor） */
+export function apiCommentFloor(
+  song: Song,
+  type: CommentTarget["type"],
+  parentId: string,
+  page = 1,
+  limit = 20,
+): Promise<CommentsResponse> {
+  const p = new URLSearchParams(songParams(song));
+  if (type !== "song") p.set("type", type);
+  p.set("floor", "1");
+  p.set("parent_id", parentId);
+  p.set("page", String(page));
+  p.set("limit", String(limit));
+  return getJSON(`/api/comments?${p.toString()}`);
+}
+
+/** C3 点赞/取消点赞评论（comment_like） */
+export function apiLikeComment(song: Song, type: CommentTarget["type"], commentId: string, like: boolean): Promise<{ ok: boolean }> {
+  const body: Record<string, string> = {
+    ...Object.fromEntries(songParams(song)),
+    action: like ? "like" : "unlike",
+    comment_id: commentId,
+  };
+  if (type !== "song") body.type = type;
+  return requestJSON(`/api/comments`, "POST", body);
+}
+
+/** C3 抱抱评论（hug_comment，需评论作者 id） */
+export function apiHugComment(song: Song, type: CommentTarget["type"], commentId: string, targetUserId: string): Promise<{ ok: boolean }> {
+  const body: Record<string, string> = {
+    ...Object.fromEntries(songParams(song)),
+    action: "hug",
+    comment_id: commentId,
+    target_user_id: targetUserId,
+  };
+  if (type !== "song") body.type = type;
+  return requestJSON(`/api/comments`, "POST", body);
+}
+
+/** C4 心动模式（以种子歌曲生成智能队列，seed 携带歌曲参数） */
+export function apiIntelligenceFm(seed: Song): Promise<{ songs?: Song[]; error?: string }> {
+  const p = new URLSearchParams(songParams(seed));
+  p.set("mode", `seed:${seed.id}`);
+  return getJSON(`/api/fm?${p.toString()}`);
+}
+
+/** C4 大歌单增量分页（playlist_track_all） */
+export function apiPlaylistTracksPage(
+  source: string,
+  id: string,
+  page = 1,
+  limit = 200,
+): Promise<{ songs?: Song[]; has_more?: boolean; error?: string }> {
+  return getJSON(`/api/playlist?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}&all=1&page=${page}&limit=${limit}`);
+}
+
+/** C5 最优匹配/综合搜索（search_multimatch / smartbox / do_search_v2） */
+export function apiSearchMatch(source: string, q: string, mode: "match" | "general" = "match"): Promise<SearchMultimatch & { error?: string }> {
+  return getJSON(`/api/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&mode=${mode}`);
+}
+
+/** C6 凭证续期（login_refresh · QQ refreshCredential） */
+export function apiAccountRefresh(source: string): Promise<{ ok: boolean; error?: string }> {
+  return requestJSON(`/api/account`, "POST", { action: "refresh", source });
+}
+
+/** C6 凭证过期探测（QQ checkExpired） */
+export function apiAccountCheckExpired(source: string): Promise<{ expired?: boolean }> {
+  return requestJSON(`/api/account`, "POST", { action: "check_expired", source });
+}
+
+/** C6 匿名注册兜底（register_anonimous，凭证自动写入浏览器会话） */
+export function apiRegisterAnonymous(): Promise<{ ok: boolean; error?: string }> {
+  return requestJSON(`/api/account`, "POST", { action: "anonymous" });
+}
+
+/** C6 国际区号（countries_code_list） */
+export function apiCountries(): Promise<{ countries?: CountryCode[] }> {
+  return getJSON(`/api/countries`);
+}
+
+/** C7 收藏/取消收藏 MV（mv_sub） */
+export function apiSubMv(id: string, sub: boolean): Promise<{ ok: boolean }> {
+  return requestJSON(`/api/mv`, "POST", { source: "netease", id, action: sub ? "sub" : "unsub" });
+}
+
+/** C7 收藏 MV 列表（mv_sublist） */
+export function apiSubbedMvs(page = 1, limit = 30): Promise<{ mvs?: MvItem[]; has_more?: boolean; error?: string }> {
+  return getJSON(`/api/mv?source=netease&sublist=1&page=${page}&limit=${limit}`);
+}
+
+/** C7 相似 MV（simi_mv） */
+export function apiSimilarMvs(id: string): Promise<{ mvs?: MvItem[] }> {
+  return getJSON(`/api/mv?source=netease&similar=1&id=${encodeURIComponent(id)}`);
+}
+
+/** C7 视频详情+链接（video_detail + video_url，网易 video 体系） */
+export function apiVideoPlay(id: string, resolution = 1080): Promise<{ video?: MvItem; url?: string; error?: string }> {
+  return getJSON(`/api/video?id=${encodeURIComponent(id)}&r=${resolution}`);
+}
+
+/** C7 相关视频（related_allvideo） */
+export function apiRelatedVideos(id: string): Promise<{ related?: MvItem[] }> {
+  return getJSON(`/api/video?id=${encodeURIComponent(id)}&related=1`);
+}
+
+/** C7 歌曲相关 MV（QQ GetSongRelatedMv，播放页入口） */
+export function apiRelatedMvs(song: Song): Promise<{ mvs?: MvItem[]; error?: string }> {
+  const p = new URLSearchParams(songParams(song));
+  return getJSON(`/api/mvs?${p.toString()}&related=1`);
+}
+
 /* ---------------- 相似推荐 ---------------- */
 
 export function apiSimilarSongs(song: Song): Promise<{ songs: Song[]; error?: string }> {
@@ -533,6 +885,13 @@ export function apiSimilarSongs(song: Song): Promise<{ songs: Song[]; error?: st
 export function apiRelatedPlaylists(song: Song): Promise<{ playlists: Playlist[]; error?: string }> {
   const p = new URLSearchParams(songParams(song));
   p.set("kind", "playlists");
+  return getJSON(`/api/similar?${p.toString()}`);
+}
+
+/** 听过此歌的用户（P1 C4：网易 simi_user，相似弹窗扩展） */
+export function apiSimilarUsers(song: Song): Promise<{ users?: UserFollowsResult["users"]; error?: string }> {
+  const p = new URLSearchParams(songParams(song));
+  p.set("kind", "users");
   return getJSON(`/api/similar?${p.toString()}`);
 }
 
@@ -584,6 +943,7 @@ export function apiCreatePlaylist(source: string, name: string): Promise<{ ok: b
   return requestJSON(`/api/playlist/manage`, "POST", { action: "create", source, name });
 }
 
+/** 删除源站歌单（高危操作，UI 需二次确认） */
 export function apiDeletePlaylist(source: string, playlistId: string): Promise<{ ok: boolean }> {
   return requestJSON(`/api/playlist/manage`, "POST", { action: "delete", source, playlist_id: playlistId });
 }
@@ -620,10 +980,11 @@ export function apiManagePlaylistSongs(
 
 /* ---------------- 手机号登录 ---------------- */
 
-export function apiPhoneLoginSendCode(source: string, phone: string): Promise<{ ok: boolean }> {
+export function apiPhoneLoginSendCode(source: string, phone: string, countryCode?: string): Promise<{ ok: boolean }> {
   return requestJSON(`/api/phone_login/${encodeURIComponent(source)}`, "POST", {
     phone,
     mode: "send_code",
+    ...(countryCode && countryCode !== "86" ? { country_code: Number(countryCode) } : {}),
   });
 }
 
@@ -632,10 +993,12 @@ export function apiPhoneLogin(
   phone: string,
   mode: "code" | "password",
   secret: string,
+  countryCode?: string,
 ): Promise<{ ok: boolean; saved?: string }> {
   return requestJSON(`/api/phone_login/${encodeURIComponent(source)}`, "POST", {
     phone,
     mode,
+    ...(countryCode && countryCode !== "86" ? { country_code: Number(countryCode) } : {}),
     ...(mode === "code" ? { code: secret } : { password: secret }),
   });
 }
@@ -937,6 +1300,7 @@ export function apiLocalDuplicates(
   return getJSON(`/api/local_music/duplicates?page=${page}&page_size=${pageSize}`);
 }
 
+/** 重建本地音乐索引（/local 页工具栏） */
 export function apiReindexLocalMusic(): Promise<{ status: string }> {
   return postJSON("/api/local_music/reindex");
 }
@@ -979,7 +1343,8 @@ export function apiSaveCookies(cookies: Record<string, string>): Promise<{ statu
 }
 
 export function apiCreateQRLogin(source: string): Promise<QRLoginSession> {
-  return fetch(`/api/qr_login/${source}`, {
+  /* 审核整改 R2-#11：路径参数编码卫生 */
+  return fetch(`/api/qr_login/${encodeURIComponent(source)}`, {
     method: "POST",
     headers: { "X-Requested-With": "XMLHttpRequest" },
   }).then(async (r) => {
@@ -990,7 +1355,7 @@ export function apiCreateQRLogin(source: string): Promise<QRLoginSession> {
 }
 
 export function apiCheckQRLogin(source: string, key: string): Promise<QRLoginResult> {
-  return getJSON(`/api/qr_login/${source}?key=${encodeURIComponent(key)}`);
+  return getJSON(`/api/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`);
 }
 
 /* ---------------- 浏览器级音源账号会话（多用户：每个访客登录自己的账号） ---------------- */
@@ -1003,12 +1368,12 @@ export interface QRLoginStatus {
 
 /** 查询当前浏览器是否已登录自己的音源账号 */
 export function apiQRLoginStatus(source: string): Promise<QRLoginStatus> {
-  return getJSON(`/api/qr_login/${source}?status=1`);
+  return getJSON(`/api/qr_login/${encodeURIComponent(source)}?status=1`);
 }
 
 /** 退出"我的音源账号"（清除浏览器会话凭证，不影响服务器全局配置） */
 export function apiQRLogout(source: string): Promise<{ status: string }> {
-  return fetch(`/api/qr_login/${source}`, {
+  return fetch(`/api/qr_login/${encodeURIComponent(source)}`, {
     method: "DELETE",
     headers: { "X-Requested-With": "XMLHttpRequest" },
   }).then(async (r) => {

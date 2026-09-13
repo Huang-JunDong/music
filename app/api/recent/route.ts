@@ -43,8 +43,11 @@ async function getHandler(req: NextRequest) {
         }
         return { songs: [] };
       } catch (err) {
-        if (err instanceof Error && err.message === "NEED_LOGIN") return { need_login: true };
-        return { error: err instanceof Error ? err.message : String(err) };
+        /* 三审 R3：匹配放宽为 /登录/（invokeNcm 转译后 message 为"需要登录网易云账号"，
+           原 === "NEED_LOGIN" 永不命中，未登录用户退化为错误文案而非登录引导） */
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/登录/.test(msg)) return { need_login: true };
+        return { error: msg };
       }
     },
     (p) => !p.error,

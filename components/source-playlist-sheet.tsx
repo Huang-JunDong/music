@@ -8,10 +8,10 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Check, ListPlus, Loader2, Music4, Pencil, Plus, Users2, X } from "lucide-react";
+import { ArrowUpToLine, Check, ListPlus, Loader2, Music4, Pencil, Plus, Trash2, Users2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "@/components/modal";
-import { apiUserPlaylists, apiCreatePlaylist, apiManagePlaylistSongs, apiUpdateSourcePlaylist } from "@/lib/client/api";
+import { apiUserPlaylists, apiCreatePlaylist, apiManagePlaylistSongs, apiUpdateSourcePlaylist, apiUpdatePlaylistOrder, apiDeletePlaylist } from "@/lib/client/api";
 import { coverProxyUrl, sourceMeta } from "@/lib/play-url";
 import type { Playlist, Song } from "@/lib/types";
 
@@ -115,6 +115,47 @@ export function SourcePlaylistSheet({ songs, onClose }: { songs: Song[] | null; 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
+  /* P1 C4：歌单置顶（playlist_order_update，仅网易） */
+  const [pinningId, setPinningId] = useState<string | null>(null);
+  /* 删除源站歌单（playlist/manage delete 动作，高危二次确认；P0 遗留入口补齐） */
+  const [deletingPlId, setDeletingPlId] = useState<string | null>(null);
+
+  const onDeletePlaylist = async (p: Playlist) => {
+    if (deletingPlId) return;
+    if (!window.confirm(`确定删除源站歌单「${p.name}」吗？\n该操作不可恢复。`)) return;
+    setDeletingPlId(p.id);
+    try {
+      await apiDeletePlaylist(source, p.id);
+      toast.success(`已删除歌单：${p.name}`);
+      const next = (playlists ?? []).filter((x) => x.id !== p.id);
+      setPlaylists(next);
+      userPlaylistsCache.set(source, next);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "删除失败（可能需要登录对应源账号）");
+    } finally {
+      setDeletingPlId(null);
+    }
+  };
+
+  const onPinToTop = async (p: Playlist) => {
+    if (pinningId) return;
+    const list = playlists ?? [];
+    if (list[0]?.id === p.id) return;
+    setPinningId(p.id);
+    try {
+      const ids = [p.id, ...list.filter((x) => x.id !== p.id).map((x) => x.id)];
+      await apiUpdatePlaylistOrder("netease", ids);
+      toast.success("已置顶该歌单");
+      const next = ids.map((id) => list.find((x) => x.id === id)!).filter(Boolean);
+      setPlaylists(next);
+      /* 审核整改 R2-F8：同步模块级缓存（对齐 onRename/onDeletePlaylist；原漏同步致重开弹窗置顶回退） */
+      userPlaylistsCache.set(source, next);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "置顶失败（可能需要登录）");
+    } finally {
+      setPinningId(null);
+    }
+  };
 
   const onRename = async (p: Playlist) => {
     const n = renameDraft.trim();
@@ -298,17 +339,39 @@ export function SourcePlaylistSheet({ songs, onClose }: { songs: Song[] | null; 
                     </button>
                     {/* 重命名（仅网易源：playlist_update；QQ 无对应接口） */}
                     {source === "netease" ? (
-                      <button
-                        onClick={() => {
-                          setRenamingId(p.id);
-                          setRenameDraft(p.name);
-                        }}
-                        aria-label={`重命名歌单 ${p.name}`}
-                        title="重命名"
-                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-zinc-300"
-                      >
-                        <Pencil className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      <>
+                        {/* P1 C4：置顶（playlist_order_update） */}
+                        <button
+                          onClick={() => void onPinToTop(p)}
+                          disabled={pinningId === p.id}
+                          aria-label={`置顶歌单 ${p.name}`}
+                          title="置顶"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-zinc-300 disabled:opacity-50"
+                        >
+                          {pinningId === p.id ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <ArrowUpToLine className="h-4 w-4" aria-hidden="true" />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRenamingId(p.id);
+                            setRenameDraft(p.name);
+                          }}
+                          aria-label={`重命名歌单 ${p.name}`}
+                          title="重命名"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-zinc-300"
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                        {/* 删除源站歌单（P0 遗留入口补齐，高危二次确认） */}
+                        <button
+                          onClick={() => void onDeletePlaylist(p)}
+                          disabled={deletingPlId === p.id}
+                          aria-label={`删除歌单 ${p.name}`}
+                          title="删除歌单（不可恢复）"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:opacity-50"
+                        >
+                          {deletingPlId === p.id ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+                        </button>
+                      </>
                     ) : null}
                   </div>
                 )}
